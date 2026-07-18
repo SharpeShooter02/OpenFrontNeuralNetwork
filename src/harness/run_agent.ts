@@ -18,7 +18,7 @@ import { WinCheckExecution } from "../../vendor/OpenFrontIO/src/core/execution/W
 import { SpawnExecution } from "../../vendor/OpenFrontIO/src/core/execution/SpawnExecution";
 import { AttackExecution } from "../../vendor/OpenFrontIO/src/core/execution/AttackExecution";
 import {
-  Difficulty, GameMapType, GameMapSize, GameMode, GameType, Player, PlayerInfo, PlayerType,
+  Difficulty, GameMapType, GameMapSize, GameMode, GameType, Player, PlayerInfo, PlayerType, UnitType,
 } from "../../vendor/OpenFrontIO/src/core/game/Game";
 
 const gameID = "agent_game";
@@ -146,37 +146,58 @@ function observe(): { labels: string[]; values: number[] } {
   return { labels, values };
 }
 
-// SPATIAL OBSERVATION: the whole map as a stack of binary grids ("channels").
-// Shape is [3, H, W] - exactly what a CNN reads. Unlike the scalar vector, this
-// shows WHERE everything is, including players we're not in contact with.
-// (plains is all land, so we don't need a water/terrain channel yet.)
-function observeSpatial(): { channels: string[]; data: Uint8Array[] } {
+// SPATIAL OBSERVATION: the whole map as a stack of binary grids ("channels"),
+// shape [C, H, W] - exactly what a CNN reads. Now covers everything Nations bring:
+// terrain (water), alliances, nuke fallout, and structures. On the all-land plains
+// map vs tribes, several channels stay all-zero until we face Nations on a real map.
+const STRUCT_TYPES = new Set<UnitType>([
+  UnitType.City, UnitType.Port, UnitType.Factory,
+  UnitType.MissileSilo, UnitType.DefensePost, UnitType.SAMLauncher,
+]);
+function observeSpatial() {
   const W = game.width(), H = game.height();
-  const mine = new Uint8Array(W * H);
-  const enemy = new Uint8Array(W * H);
-  const neutral = new Uint8Array(W * H);
+  const mk = () => new Uint8Array(W * H);
+  const mine = mk(), hostile = mk(), allied = mk(), neutral = mk();
+  const blocked = mk(), fallout = mk(), myStruct = mk(), enemyStruct = mk();
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const t = game.ref(x, y), i = y * W + x;
-    if (!game.isLand(t)) continue;
+    if (!game.isLand(t) || game.isImpassable(t)) { blocked[i] = 1; continue; } // terrain / water
+    if (game.hasFallout(t)) fallout[i] = 1;                                     // nuke damage
     if (!game.hasOwner(t)) { neutral[i] = 1; continue; }
-    if (game.ownerID(t) === me.smallID()) mine[i] = 1; else enemy[i] = 1;
+    const sid = game.ownerID(t);
+    if (sid === me.smallID()) mine[i] = 1;
+    else {
+      const o = game.playerBySmallID(sid);
+      if (o.isPlayer() && me.isFriendly(o)) allied[i] = 1; else hostile[i] = 1;  // alliances
+    }
   }
-  return { channels: ["mine", "enemy", "neutral"], data: [mine, enemy, neutral] };
+  for (const u of game.units()) {                                               // structures
+    if (!u.isActive() || !STRUCT_TYPES.has(u.type())) continue;
+    const i = game.y(u.tile()) * W + game.x(u.tile());
+    if (u.owner().smallID() === me.smallID()) myStruct[i] = 1; else enemyStruct[i] = 1;
+  }
+  const channels = ["mine", "hostile", "allied", "neutral", "blocked", "fallout", "myStruct", "enemyStruct"];
+  const data = [mine, hostile, allied, neutral, blocked, fallout, myStruct, enemyStruct];
+  return { channels, data };
 }
 
-// shrunk ASCII view so we can eyeball the tensor: # = us, O = enemy, . = empty land
+// shrunk ASCII view (priority): M/E = my/enemy structure, # = us, + = ally, O = enemy,
+// * = fallout, . = empty land, ~ = water. Also prints how many 1s are in each channel.
 function printSpatial(cols = 40): void {
   const sp = observeSpatial();
   const W = game.width(), H = game.height();
+  const [mine, hostile, allied, neutral, blocked, fallout, myStruct, enemyStruct] = sp.data;
   const step = Math.max(1, Math.ceil(W / cols));
   for (let y = 0; y < H; y += step) {
     let row = "";
     for (let x = 0; x < W; x += step) {
       const i = y * W + x;
-      row += sp.data[0][i] ? "#" : sp.data[1][i] ? "O" : sp.data[2][i] ? "." : " ";
+      row += myStruct[i] ? "M" : enemyStruct[i] ? "E" : mine[i] ? "#" : allied[i] ? "+"
+        : hostile[i] ? "O" : fallout[i] ? "*" : neutral[i] ? "." : blocked[i] ? "~" : " ";
     }
     console.log("   " + row);
   }
+  console.log("   channel sums: " + sp.channels.map((c, k) => `${c}=${sp.data[k].reduce((a, v) => a + v, 0)}`).join("  "));
 }
 
 // --- (4) the control loop: LOOK, DECIDE, ACT (and now, print the OBSERVATION) ---
@@ -216,7 +237,7 @@ for (; tick < 4000; tick++) {
     if (me.isAlive()) {
       const obs = observe();
       console.log("   observation: " + obs.labels.map((l, i) => `${l}=${obs.values[i].toFixed(2)}`).join("  "));
-      if (tick === 500) { console.log("   spatial map (#=us  O=enemy  .=empty):"); printSpatial(); }
+      if (tick === 500) { console.log("   spatial map (M/E=structures #=us +=ally O=enemy *=fallout .=empty ~=water):"); printSpatial(); }
     }
   }
   if (!me.isAlive() && tick > 50) { console.log(`Agent died at tick ${tick}.`); break; }

@@ -85,6 +85,17 @@ we could skip a water/terrain channel for now.
 but the real tensor is full resolution. Buildings/terrain/strength would each be a new
 channel later.
 
+## Step 6 — Complete the vision (8 channels)
+**Changed:** `observeSpatial()` now returns 8 channels: mine, hostile, allied, neutral,
+blocked (water/terrain), fallout (nuke damage), myStruct, enemyStruct. `printSpatial()`
+shows the richer map and prints per-channel sums.
+
+**Why:** we're about to face Nations, which build structures, nuke, and form/break
+alliances. The bot can't strategize about those unless it can *see* them, so we gave it a
+channel for each ahead of time. On the current all-land plains + tribe setup, the
+`blocked/fallout/struct/allied` channels read 0 — they'll light up once we switch to
+Nations on a real (water-containing) map. That opponent switch is the next step.
+
 ---
 
 ## Git workflow (how we commit going forward)
