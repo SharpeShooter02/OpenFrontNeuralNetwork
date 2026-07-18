@@ -1,0 +1,15 @@
+{
+  "name": "openfront-nn",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reinforcement-learning harness for the OpenFront RTS engine",
+  "type": "module",
+  "scripts": {
+    "harness": "tsx src/harness/run_headless.ts",
+    "replay": "tsx src/harness/record_replay.ts",
+    "agent": "tsx src/harness/run_agent.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

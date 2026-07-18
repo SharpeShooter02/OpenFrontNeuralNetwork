@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenFront Replay</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0e1116; color: #e6e6e6;
+    font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex; min-height: 100vh; align-items: flex-start; gap: 24px; padding: 24px;
+  }
+  #stage { background: #060a0f; border: 1px solid #1e2530; border-radius: 8px; padding: 10px; }
+  canvas { display: block; image-rendering: pixelated; border-radius: 4px; }
+  #side { width: 320px; }
+  h1 { font-size: 16px; margin: 0 0 2px; }
+  .muted { color: #8a94a3; font-size: 12px; }
+  #controls { display: flex; align-items: center; gap: 10px; margin: 16px 0 8px; }
+  button {
+    background: #1b2230; color: #e6e6e6; border: 1px solid #2c3546;
+    border-radius: 6px; padding: 6px 12px; font-size: 15px; cursor: pointer; min-width: 44px;
+  }
+  button:hover { background: #232c3d; }
+  input[type=range] { width: 100%; accent-color: #4f83ff; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .row label { white-space: nowrap; color: #8a94a3; font-size: 12px; }
+  #board { margin-top: 16px; border-top: 1px solid #1e2530; padding-top: 12px; }
+  .bar { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+  .chip { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+  .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pct { color: #8a94a3; font-variant-numeric: tabular-nums; }
+  #err { padding: 40px; max-width: 520px; }
+  code { background: #1b2230; padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<script src="replay.js"></script>
+<script>
+(function () {
+  const R = window.REPLAY;
+  if (!R) {
+    document.body.innerHTML =
+      '<div id="err"><h1>No replay loaded</h1><p class="muted">Run the recorder first to generate <code>viz/replay.js</code>:</p><p><code>npm run replay</code></p><p class="muted">Then refresh this page.</p></div>';
+    return;
+  }
+
+  const b64 = (s) => { const bin = atob(s); const a = new Uint8Array(bin.length); for (let i=0;i<bin.length;i++) a[i]=bin.charCodeAt(i); return a; };
+  const hexToRgb = (h) => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
+
+  const W = R.W, H = R.H;
+  const terrain = b64(R.terrain);
+  const legendRGB = R.legend.map((l) => hexToRgb(l.color));
+
+  // Frames are stored as deltas (only changed tiles). Reconstruct incrementally;
+  // scrubbing backward rebuilds from frame 0 (cheap for a few hundred frames).
+  const deltas = R.deltas.map(b64);
+  const nFrames = deltas.length;
+  const curGrid = new Uint8Array(W * H);
+  let rendered = -1;
+  function applyDelta(grid, buf) {
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const n = buf.length / 5;
+    for (let k = 0; k < n; k++) grid[dv.getUint32(k * 5, true)] = dv.getUint8(k * 5 + 4);
+  }
+  function gridAt(fi) {
+    if (fi < rendered) { curGrid.fill(0); rendered = -1; }
+    for (let f = rendered + 1; f <= fi; f++) applyDelta(curGrid, deltas[f]);
+    rendered = fi;
+    return curGrid;
+  }
+  const landTotal = terrain.reduce((a, v) => a + v, 0) || (W * H);
+  const WATER = [11, 26, 46], NEUTRAL = [46, 52, 64];
+
+  // layout
+  document.body.insertAdjacentHTML("afterbegin",
+    '<div id="stage"><canvas id="map"></canvas></div>' +
+    '<div id="side">' +
+      '<h1>OpenFront Replay</h1>' +
+      '<div class="muted" id="meta"></div>' +
+      '<div id="controls"><button id="play">❚❚</button>' +
+        '<input id="scrub" type="range" min="0" max="' + (nFrames-1) + '" value="0"></div>' +
+      '<div class="row"><label>Speed</label><input id="speed" type="range" min="1" max="60" value="12"></div>' +
+      '<div class="muted" id="tickinfo"></div>' +
+      '<div id="board"></div>' +
+    '</div>');
+
+  const canvas = document.getElementById("map");
+  const ctx = canvas.getContext("2d");
+  const SCALE = Math.max(1, Math.floor(560 / Math.max(W, H)));
+  canvas.width = W * SCALE; canvas.height = H * SCALE;
+  ctx.imageSmoothingEnabled = false;
+  const off = document.createElement("canvas"); off.width = W; off.height = H;
+  const octx = off.getContext("2d");
+  const img = octx.createImageData(W, H);
+
+  document.getElementById("meta").textContent =
+    W + "×" + H + " · " + nFrames + " frames · " + R.legend.length + " players · winner: " + R.winner;
+
+  function draw(fi) {
+    const buf = gridAt(fi);
+    const d = img.data;
+    for (let i = 0; i < W * H; i++) {
+      const o = buf[i];
+      const c = o === 0 ? (terrain[i] ? NEUTRAL : WATER) : (legendRGB[o - 1] || NEUTRAL);
+      const p = i * 4; d[p] = c[0]; d[p+1] = c[1]; d[p+2] = c[2]; d[p+3] = 255;
+    }
+    octx.putImageData(img, 0, 0);
+    ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
+
+    // scoreboard
+    const counts = new Array(R.legend.length + 1).fill(0);
+    for (let i = 0; i < buf.length; i++) counts[buf[i]]++;
+    const rows = [];
+    for (let k = 1; k <= R.legend.length; k++) if (counts[k] > 0) rows.push([k, counts[k]]);
+    rows.sort((a, b) => b[1] - a[1]);
+    document.getElementById("board").innerHTML = rows.slice(0, 12).map(([k, n]) =>
+      '<div class="bar"><span class="chip" style="background:' + R.legend[k-1].color + '"></span>' +
+      '<span class="name">' + R.legend[k-1].name + '</span>' +
+      '<span class="pct">' + (100 * n / landTotal).toFixed(1) + '%</span></div>').join("") || '<div class="muted">no territory yet</div>';
+    document.getElementById("tickinfo").textContent = "tick " + (R.frameTicks[fi] ?? "?") + "  ·  frame " + (fi+1) + "/" + nFrames;
+    document.getElementById("scrub").value = fi;
+  }
+
+  // playback
+  let fi = 0, playing = true, last = 0, acc = 0;
+  const playBtn = document.getElementById("play");
+  const scrub = document.getElementById("scrub");
+  const speedEl = document.getElementById("speed");
+  function setPlaying(p) { playing = p; playBtn.textContent = p ? "❚❚" : "▶"; }
+  playBtn.onclick = () => { if (fi >= nFrames - 1) fi = 0; setPlaying(!playing); };
+  scrub.oninput = () => { fi = +scrub.value; setPlaying(false); draw(fi); };
+
+  function tick(ts) {
+    const fps = +speedEl.value;
+    if (playing) {
+      if (!last) last = ts;
+      acc += ((ts - last) / 1000) * fps; last = ts;
+      while (acc >= 1) { acc -= 1; fi++; if (fi >= nFrames - 1) { fi = nFrames - 1; setPlaying(false); break; } }
+      draw(fi);
+    } else { last = 0; }
+    requestAnimationFrame(tick);
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.code === "Space") { e.preventDefault(); if (fi >= nFrames-1) fi = 0; setPlaying(!playing); }
+    if (e.code === "ArrowRight") { setPlaying(false); fi = Math.min(fi+1, nFrames-1); draw(fi); }
+    if (e.code === "ArrowLeft") { setPlaying(false); fi = Math.max(fi-1, 0); draw(fi); }
+  });
+
+  draw(0);
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
