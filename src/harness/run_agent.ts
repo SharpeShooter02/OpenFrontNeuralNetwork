@@ -146,6 +146,39 @@ function observe(): { labels: string[]; values: number[] } {
   return { labels, values };
 }
 
+// SPATIAL OBSERVATION: the whole map as a stack of binary grids ("channels").
+// Shape is [3, H, W] - exactly what a CNN reads. Unlike the scalar vector, this
+// shows WHERE everything is, including players we're not in contact with.
+// (plains is all land, so we don't need a water/terrain channel yet.)
+function observeSpatial(): { channels: string[]; data: Uint8Array[] } {
+  const W = game.width(), H = game.height();
+  const mine = new Uint8Array(W * H);
+  const enemy = new Uint8Array(W * H);
+  const neutral = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const t = game.ref(x, y), i = y * W + x;
+    if (!game.isLand(t)) continue;
+    if (!game.hasOwner(t)) { neutral[i] = 1; continue; }
+    if (game.ownerID(t) === me.smallID()) mine[i] = 1; else enemy[i] = 1;
+  }
+  return { channels: ["mine", "enemy", "neutral"], data: [mine, enemy, neutral] };
+}
+
+// shrunk ASCII view so we can eyeball the tensor: # = us, O = enemy, . = empty land
+function printSpatial(cols = 40): void {
+  const sp = observeSpatial();
+  const W = game.width(), H = game.height();
+  const step = Math.max(1, Math.ceil(W / cols));
+  for (let y = 0; y < H; y += step) {
+    let row = "";
+    for (let x = 0; x < W; x += step) {
+      const i = y * W + x;
+      row += sp.data[0][i] ? "#" : sp.data[1][i] ? "O" : sp.data[2][i] ? "." : " ";
+    }
+    console.log("   " + row);
+  }
+}
+
 // --- (4) the control loop: LOOK, DECIDE, ACT (and now, print the OBSERVATION) ---
 const me = game.player(AGENT_ID);
 console.log(`Agent spawned at tile (${game.x(spawnTile)}, ${game.y(spawnTile)})`);
@@ -183,6 +216,7 @@ for (; tick < 4000; tick++) {
     if (me.isAlive()) {
       const obs = observe();
       console.log("   observation: " + obs.labels.map((l, i) => `${l}=${obs.values[i].toFixed(2)}`).join("  "));
+      if (tick === 500) { console.log("   spatial map (#=us  O=enemy  .=empty):"); printSpatial(); }
     }
   }
   if (!me.isAlive() && tick > 50) { console.log(`Agent died at tick ${tick}.`); break; }

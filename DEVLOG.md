@@ -73,6 +73,18 @@ train badly on wildly different scales.
 *where*. Deciding *where* to act needs the spatial observation (the map as image channels)
 — that's the next step.
 
+## Step 5 — Observation (spatial channels)
+**Added:** `observeSpatial()` — the whole map as a `[3, H, W]` tensor of binary grids:
+"mine", "enemy", "neutral". Plus `printSpatial()` to eyeball it as shrunk ASCII.
+
+**Why:** the scalar vector only knew our border — it couldn't say *where* anything was.
+The spatial tensor gives full-map vision (including players we aren't touching), which is
+what a CNN reads to decide *which direction* to act. We used the all-land `plains` map so
+we could skip a water/terrain channel for now.
+**Note:** each symbol (#/O/.) is its own 0/1 channel; the ASCII is shrunk 3× for display
+but the real tensor is full resolution. Buildings/terrain/strength would each be a new
+channel later.
+
 ---
 
 ## Git workflow (how we commit going forward)
