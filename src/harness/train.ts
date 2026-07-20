@@ -82,7 +82,8 @@ async function playGame(policy: Policy, seed: number, rec?: any): Promise<number
     rec.buildingFrames.push(bld);
     const gold:number[]=new Array(rec.legend.length).fill(0);
     for(const pl of game.players()){ if(!pl.isPlayer())continue; const k=idToIdx.get(pl.smallID()); if(k!==undefined) gold[k-1]=Math.round(Number(pl.gold())); }
-    rec.goldFrames.push(gold); };
+    rec.goldFrames.push(gold);
+    rec.allyFrames.push(me.allies().map((a:any)=>idToIdx.get(a.smallID())).filter((k:any)=>k!==undefined)); };
 
   const t0 = performance.now();
   for (let tick = 0; tick < MAX_TICKS; tick++) {
@@ -106,7 +107,7 @@ async function playGame(policy: Policy, seed: number, rec?: any): Promise<number
         Math.min(1, me.unitCount(UnitType.City)/8), me.unitCount(UnitType.MissileSilo)>0?1:0, coastal];
       for (const req of me.incomingAllianceRequests()) req.accept();
       const { action, troopFraction } = policy.forward(obs);
-      const commit = Math.floor(me.troops() * Math.max(0.1, Math.min(0.95, troopFraction)));
+      const commit = Math.floor(me.troops() * Math.max(0.01, Math.min(1, troopFraction)));
       const build = (u: UnitType, tile: number) => { const bt = me.canBuild(u, tile); if (bt) game.addExecution(new ConstructionExecution(me, u, bt)); };
       if (action === 0 && empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
       else if (action === 1 && weakest) game.addExecution(new AttackExecution(commit, me, weakest.id()));
@@ -163,9 +164,9 @@ console.log(`FINAL validation reward ${(await evaluate(policy, VAL)).toFixed(3)}
 const dataDir = path.join(dir, "../../data"); fs.mkdirSync(dataDir, { recursive: true });
 fs.writeFileSync(path.join(dataDir, "best_weights.json"), JSON.stringify(best));
 console.log("saved trained weights -> data/best_weights.json");
-const rec: any = { frames: [], ticks: [], terrain: new Uint8Array(1), legend: [], W: 0, H: 0, buildingFrames: [], goldFrames: [] };
+const rec: any = { frames: [], ticks: [], terrain: new Uint8Array(1), legend: [], W: 0, H: 0, buildingFrames: [], goldFrames: [], allyFrames: [] };
 await playGame(policy, VAL[0], rec);
 const vizDir = path.join(dir, "../../viz"); fs.mkdirSync(vizDir, { recursive: true });
-const payload = { W: rec.W, H: rec.H, interval: 20, winner: "(trained on world)", terrain: Buffer.from(rec.terrain).toString("base64"), legend: rec.legend, frameTicks: rec.ticks, deltas: rec.frames, buildingFrames: rec.buildingFrames, goldFrames: rec.goldFrames };
+const payload = { W: rec.W, H: rec.H, interval: 20, winner: "(trained on world)", terrain: Buffer.from(rec.terrain).toString("base64"), legend: rec.legend, frameTicks: rec.ticks, deltas: rec.frames, buildingFrames: rec.buildingFrames, goldFrames: rec.goldFrames, allyFrames: rec.allyFrames };
 fs.writeFileSync(path.join(vizDir, "replay.js"), "window.REPLAY = " + JSON.stringify(payload) + ";");
 console.log(`recorded trained game -> viz/replay.js (${rec.frames.length} frames)`);

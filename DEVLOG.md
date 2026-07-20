@@ -276,3 +276,19 @@ wilderness is clearly worth it — pushes the agent to expand instead of turtle.
 **Population:** bumped to **10 nations + 50 tribes** (was 6/30) — map felt underpopulated.
 **Result:** validation reward now sits in the ~0.2 range (was 0.005) — real signal to climb.
 **Retrain required** (network output grew, so old weights are the wrong size).
+
+## Step 18 — PyTorch era, part 1: the environment bridge
+**Why:** to use gradient learning, Python (PyTorch) must *drive* the game. So the TS sim
+becomes a Gym-style **environment server**.
+**Added:** `src/env/env_server.ts` — a Node process speaking line-delimited JSON over stdio:
+`{"cmd":"reset","seed":N}` starts a fresh game (world map4x, 10 nations + 50 tribes) and
+returns the 12-number observation; `{"cmd":"step","action":k,"troop":f}` applies the move,
+advances 20 ticks, and returns `{obs, reward, done}`. Reward is now **per-step and dense**:
+`5*(change in land share) + small survival bonus`, plus terminal win/death bonuses — much
+better for gradient credit assignment than the old per-episode score. Engine console output
+is silenced so stdout carries only JSON.
+**Added:** `train_torch/drive_random.py` — spawns the env and drives 3 episodes with random
+actions (no PyTorch). **Verified:** Python drove full games over the pipe; random policy gets
+negative reward (loses land), exactly as expected. The bridge works.
+**Next:** a PyTorch policy that reads obs and outputs action + troop fraction (part 2), then
+REINFORCE/PPO to actually learn (part 3).

@@ -69,7 +69,7 @@ const terrain = new Uint8Array(RW * RH);
 for (let ry = 0; ry < RH; ry++) for (let rx = 0; rx < RW; rx++) { const t = game.ref(Math.min(W-1,rx*DS), Math.min(H-1,ry*DS)); terrain[ry*RW+rx] = game.isLand(t) && !game.isImpassable(t) ? 1 : 0; }
 const idToIdx = new Map<number, number>();
 const legend: { name: string; color: string }[] = [];
-const deltas: string[] = []; const frameTicks: number[] = []; const buildingFrames: number[][] = []; const goldFrames: number[][] = [];
+const deltas: string[] = []; const frameTicks: number[] = []; const buildingFrames: number[][] = []; const goldFrames: number[][] = []; const allyFrames: number[][] = [];
 let prev = new Uint8Array(RW * RH);
 function ownerAt(x: number, y: number): number { const t = game.ref(x, y); if (!game.hasOwner(t)) return 0; const sid = game.ownerID(t);
   let k = idToIdx.get(sid); if (k === undefined) { k = legend.length + 1; idToIdx.set(sid, k); const p: any = game.playerBySmallID(sid);
@@ -89,6 +89,7 @@ function snapshot() {
   const gold: number[] = new Array(legend.length).fill(0);
   for (const pl of game.players()) { if (!pl.isPlayer()) continue; const k = idToIdx.get(pl.smallID()); if (k !== undefined) gold[k-1] = Math.round(Number(pl.gold())); }
   goldFrames.push(gold);
+  allyFrames.push(me.allies().map((a:any)=>idToIdx.get(a.smallID())).filter((k:any)=>k!==undefined));
 }
 
 console.log(`WORLD ${W}x${H} | ${NUM_NATIONS} nations + ${BOTS} tribes`);
@@ -115,7 +116,7 @@ for (; tick < MAX_TICKS; tick++) {
       Math.min(1, me.unitCount(UnitType.City)/8), me.unitCount(UnitType.MissileSilo)>0?1:0, coastal];
     for (const req of me.incomingAllianceRequests()) req.accept();
     const { action, troopFraction } = policy.forward(obs);
-    const commit = Math.floor(me.troops() * Math.max(0.1, Math.min(0.95, troopFraction)));
+    const commit = Math.floor(me.troops() * Math.max(0.01, Math.min(1, troopFraction)));
     const build = (u: UnitType, tile: number) => { const bt = me.canBuild(u, tile); if (bt) game.addExecution(new ConstructionExecution(me, u, bt)); };
     if (action === 0 && empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
     else if (action === 1 && weakest) game.addExecution(new AttackExecution(commit, me, weakest.id()));
@@ -145,6 +146,6 @@ const land = game.numLandTiles();
 const reward = computeReward({ peakLandShare: peakTiles/land, survivalFraction: lastAlive/MAX_TICKS, survived: me.isAlive(), won: me.isAlive() && me.numTilesOwned() >= 0.8*land });
 console.log(`REWARD = ${reward.toFixed(4)} (${me.isAlive() ? "survived to tick " + tick : "died at tick " + tick}, peakTiles=${peakTiles})`);
 const outDir = path.join(dir, "../../viz"); fs.mkdirSync(outDir, { recursive: true });
-const payload = { W: RW, H: RH, interval: FRAME_EVERY, winner: "(world)", terrain: Buffer.from(terrain).toString("base64"), legend, frameTicks, deltas, buildingFrames, goldFrames };
+const payload = { W: RW, H: RH, interval: FRAME_EVERY, winner: "(world)", terrain: Buffer.from(terrain).toString("base64"), legend, frameTicks, deltas, buildingFrames, goldFrames, allyFrames };
 fs.writeFileSync(path.join(outDir, "replay.js"), "window.REPLAY = " + JSON.stringify(payload) + ";");
 console.log(`wrote viz/replay.js (${deltas.length} frames)`);
