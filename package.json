@@ -7,7 +7,8 @@
   "scripts": {
     "harness": "tsx src/harness/run_headless.ts",
     "replay": "tsx src/harness/record_replay.ts",
-    "agent": "tsx src/harness/run_agent.ts"
+    "agent": "tsx src/harness/run_agent.ts",
+    "train": "tsx src/harness/train.ts"
   },
   "devDependencies": {
     "tsx": "^4.19.2"

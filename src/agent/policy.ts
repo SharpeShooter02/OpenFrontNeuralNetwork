@@ -47,3 +47,15 @@ export class Policy {
     return { probs, action };
   }
 }
+
+// --- weight helpers for training: flatten to / from a single list of numbers ---
+export function getFlat(p: Policy): number[] {
+  return [...p.W1.flat(), ...p.b1, ...p.W2.flat(), ...p.b2];
+}
+export function setFlat(p: Policy, v: number[]): void {
+  let k = 0;
+  for (const row of p.W1) for (let j = 0; j < row.length; j++) row[j] = v[k++];
+  for (let i = 0; i < p.b1.length; i++) p.b1[i] = v[k++];
+  for (const row of p.W2) for (let j = 0; j < row.length; j++) row[j] = v[k++];
+  for (let i = 0; i < p.b2.length; i++) p.b2[i] = v[k++];
+}

@@ -132,6 +132,37 @@ repeated; you can read every number in `policy.ts`.
 **Next:** a reward signal (score a game), then a training loop (nudge the weights toward
 what won).
 
+## Step 9 — Reward (scoring a game)
+**Added:** `src/agent/reward.ts` — `computeReward({peakLandShare, survived, won})` =
+peak land share + 0.5 for surviving + 5 for winning. `run_agent.ts` tracks peak land and
+prints `REWARD` at game end.
+
+**Why:** the reward is the single number training maximizes — whatever it rewards is what
+the agent learns, so it must match what we actually want (get big, survive, win). The
+untrained policy scores ~0.0001 (a speck that dies instantly); training's job is to push
+that number up.
+**Design note for next step:** on the *world* map our agent is a speck and winning is
+near-impossible, so the reward signal is weak/sparse there. Training will likely work far
+better first on a *small* map (plains + tribes) where the agent can actually grow and win,
+giving a meaningful reward gradient — then scale up.
+
+## Step 10 — Training loop (it learns!)
+**Added:** `src/harness/train.ts` (run: `npm run train`) plus `getFlat`/`setFlat` in
+`policy.ts`. Uses a **(1+1) evolution strategy** on the small plains map vs tribes: mutate
+the weights, play a game, keep the mutation only if its reward is higher. No gradients/backprop.
+
+**Result:** reward climbed from **0.0052** (random weights — a helpless speck) to **6.5**
+(full map + survived + won) in ~10 generations. The agent taught itself to play. Training
+saves the weights to `data/best_weights.json` and records the trained agent's winning game
+to `viz/replay.js` so you can watch it.
+
+**Gotcha fixed:** the game-end check "≤1 player alive" fired at tick 0 (nobody spawned yet),
+quitting every game instantly — same `started` guard as Phase 0.
+
+**This completes the core arc:** observation → policy → reward → training. Everything else
+is refinement: train on Nations/world, richer actions (boats/building), spatial CNN policy,
+gradient-based learning, etc.
+
 ---
 
 ## Git workflow (how we commit going forward)

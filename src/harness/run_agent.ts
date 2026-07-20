@@ -12,6 +12,7 @@ import { WinCheckExecution } from "../../vendor/OpenFrontIO/src/core/execution/W
 import { SpawnExecution } from "../../vendor/OpenFrontIO/src/core/execution/SpawnExecution";
 import { AttackExecution } from "../../vendor/OpenFrontIO/src/core/execution/AttackExecution";
 import { Policy, ACTIONS } from "../agent/policy";
+import { computeReward } from "../agent/reward";
 import { PseudoRandom } from "../../vendor/OpenFrontIO/src/core/PseudoRandom";
 import {
   Cell, Difficulty, GameMapType, GameMapSize, GameMode, GameType,
@@ -152,6 +153,7 @@ function snapshot() {
 const STR = new Set([UnitType.City,UnitType.Port,UnitType.Factory,UnitType.MissileSilo,UnitType.DefensePost,UnitType.SAMLauncher]);
 console.log(`WORLD ${W}x${H} pooled to ${RW}x${RH} | ${nations.length} nations + ${BOTS} tribes | agent at (${game.x(spawnTile)},${game.y(spawnTile)})`);
 let tick = 0;
+let peakTiles = 0; // track the most land we ever held (for the reward)
 for (; tick < 6000; tick++) {
   if (me.isAlive() && tick % DECISION_EVERY === 0 && me.troops() > 1) {
     let emptyLandAdjacent = false; const enemies = new Set<Player>();
@@ -171,6 +173,7 @@ for (; tick < 6000; tick++) {
     if (tick % 100 === 0) console.log(`   policy: probs=[${probs.map((p) => p.toFixed(2)).join(", ")}] -> ${ACTIONS[action]}`);
   }
   game.executeNextTick();
+  if (me.isAlive()) peakTiles = Math.max(peakTiles, me.numTilesOwned());
   if (tick % FRAME_EVERY === 0) snapshot();
   if (tick % 1000 === 0) {
     const nat = game.players().filter(p => p.type() === PlayerType.Nation && p.isAlive()).length;
@@ -186,6 +189,14 @@ for (; tick < 6000; tick++) {
   if (aliveP.length <= 1) break;
 }
 snapshot();
+// ---- score this game with the reward ----
+const landTotal = game.numLandTiles();
+const survived = me.isAlive();
+const won = survived && me.numTilesOwned() >= 0.8 * landTotal;
+const stats = { peakLandShare: peakTiles / landTotal, survived, won };
+const reward = computeReward(stats);
+console.log(`REWARD = ${reward.toFixed(4)}  (peakLandShare=${stats.peakLandShare.toFixed(4)}, survived=${survived}, won=${won})`);
+
 const outDir = path.join(dir, "../../viz"); fs.mkdirSync(outDir, { recursive: true });
 const payload = { W: RW, H: RH, interval: FRAME_EVERY, winner: "(world demo)", terrain: Buffer.from(terrain).toString("base64"), legend, frameTicks, deltas };
 fs.writeFileSync(path.join(outDir, "replay.js"), "window.REPLAY = " + JSON.stringify(payload) + ";");
