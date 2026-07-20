@@ -163,6 +163,21 @@ quitting every game instantly — same `started` guard as Phase 0.
 is refinement: train on Nations/world, richer actions (boats/building), spatial CNN policy,
 gradient-based learning, etc.
 
+## Step 11 — Train vs Nations, with generalization
+**Why:** the tribe-trained policy *overfit* — it learned to hoard troops behind tribe-scale
+caps and strike once, which fails against Nations' bigger economies. Two overfitting leaks
+fixed: (1) **opponent** — now trains vs injected Nations + tribes on the medium `big_plains`
+(200×200) map; (2) **seed** — each candidate is now evaluated over several games with
+different seeds and averaged, and progress is measured on **held-out** validation seeds, so
+it learns general skill rather than one game's trick.
+
+**How:** `train.ts` injects `NUM_NATIONS` Nation objects at seed-varied positions (Nations
+need a spawn phase, so we run ~150 spawn ticks then end it, then drop in the agent), plus
+tribes. (1+1)-ES compares best vs candidate on the *same* fresh seeds each generation.
+**Result:** held-out validation reward climbs from ~0.001 to ~0.09–0.17 — the agent learns
+to carve out territory against Nations (no more trivial wins; Nations are genuinely hard).
+Saves `data/best_weights.json` and records a trained game to `viz/replay.js`.
+
 ---
 
 ## Git workflow (how we commit going forward)
