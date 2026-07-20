@@ -76,7 +76,7 @@ game.addExecution(new SpawnExecution(gameID, agentInfo, spawnTile));
 game.executeNextTick(); // let the agent spawn
 const me = game.player(AGENT_ID);
 const OPPONENTS = nations.length + BOTS;
-const policy = new Policy(7); // 7 scalar observations in, 3 actions out (random weights for now)
+const policy = new Policy(9, 8, 4); // 9 observations in, 4 actions out (random weights for now)
 
 // SCALAR OBSERVATION (7 normalized numbers)
 function observe(): { labels: string[]; values: number[] } {
@@ -90,10 +90,11 @@ function observe(): { labels: string[]; values: number[] } {
   });
   const weakest = [...enemies].sort((a, b) => a.troops() - b.troops())[0];
   const enemiesAlive = game.players().filter((p) => p.isPlayer() && p.isAlive() && p.id() !== AGENT_ID).length;
-  const labels = ["landShare","troops","gold","enemiesAlive","emptyAdj","enemyNbrs","vsWeakest"];
+  const labels = ["landShare","troops","gold","enemiesAlive","emptyAdj","enemyNbrs","vsWeakest","allies","incomingReq"];
   const values = [me.numTilesOwned()/landTotal, Math.min(1,troops/200000), Math.min(1,Number(me.gold())/200000),
     enemiesAlive/OPPONENTS, emptyAdj, Math.min(1,enemies.size/6),
-    weakest ? Math.min(1, troops/Math.max(1,weakest.troops())/2) : 1];
+    weakest ? Math.min(1, troops/Math.max(1,weakest.troops())/2) : 1,
+    Math.min(1, me.allies().length/5), me.incomingAllianceRequests().length > 0 ? 1 : 0];
   return { labels, values };
 }
 
@@ -165,10 +166,13 @@ for (; tick < 6000; tick++) {
       if (o.isPlayer() && !me.isFriendly(o)) enemies.add(o);
     });
     const weakest = [...enemies].sort((a, b) => a.troops() - b.troops())[0];
-    // THE POLICY NETWORK chooses the action from the observation (random weights -> plays badly)
+    // always accept alliance offers (free protection), then let the policy choose
+    for (const req of me.incomingAllianceRequests()) req.accept();
+    // THE POLICY NETWORK chooses the action from the observation
     const { action, probs } = policy.forward(observe().values);
     if (action === 0 && emptyLandAdjacent) game.addExecution(new AttackExecution(me.troops() / 2, me, game.terraNullius().id()));
     else if (action === 1 && weakest) game.addExecution(new AttackExecution(me.troops() / 3, me, weakest.id()));
+    else if (action === 3) { for (const e of enemies) if (me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
     // action 2 = wait (do nothing)
     if (tick % 100 === 0) console.log(`   policy: probs=[${probs.map((p) => p.toFixed(2)).join(", ")}] -> ${ACTIONS[action]}`);
   }

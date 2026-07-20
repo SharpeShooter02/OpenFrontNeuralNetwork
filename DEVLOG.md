@@ -178,6 +178,23 @@ tribes. (1+1)-ES compares best vs candidate on the *same* fresh seeds each gener
 to carve out territory against Nations (no more trivial wins; Nations are genuinely hard).
 Saves `data/best_weights.json` and records a trained game to `viz/replay.js`.
 
+## Step 12 — Diplomacy: alliances (action + observation)
+**Why:** watching the trained agent, it would expand, grab an easy kill, then get
+**backstabbed and ganged up on** by Nations — because it had no diplomacy. The Nations run
+their full toolkit (attack, alliances, structures, nukes, MIRV, warships), so a 3-action
+agent is hopelessly outmatched.
+
+**Added:** (1) auto-accept incoming alliance offers each decision (free protection);
+(2) a 4th action `requestAlliance` (ask all bordering enemies for a pact — Nations often
+accept); (3) two observation features — number of allies and whether a request is incoming.
+Policy is now `9 inputs → 4 actions`. Applied to both `train.ts` and `run_agent.ts`.
+
+**Verified it matters:** with the same seeds, seeking alliances multiplied survival time
+(e.g. death@720 → survived the whole game with 3 allies and 33% of the map; death@696 →
+death@3618). Untrained baseline reward jumped 0.001 → ~0.19 from alliances alone.
+**Note:** changing the observation/action size means old 7-input weights are incompatible —
+retrain from scratch. **Next:** building (cities for economy).
+
 ---
 
 ## Git workflow (how we commit going forward)

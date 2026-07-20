@@ -7,7 +7,7 @@
 // A "neural network" here is literally: multiply inputs by weights, add them up, bend
 // the result with a nonlinearity, repeat. That's the whole thing.
 
-export const ACTIONS = ["expand", "attackWeakest", "wait"] as const;
+export const ACTIONS = ["expand", "attackWeakest", "wait", "requestAlliance"] as const;
 
 // a seeded random number generator so runs are reproducible
 function makeRng(seed: number) {

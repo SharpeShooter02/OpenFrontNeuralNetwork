@@ -72,10 +72,14 @@ async function playGame(policy: Policy, seed: number, rec?: any): Promise<number
       const weakest = [...enemies].sort((a, b) => a.troops() - b.troops())[0];
       const obs = [me.numTilesOwned()/land, Math.min(1,me.troops()/200000), Math.min(1,Number(me.gold())/200000),
         game.players().filter(p=>p.isPlayer()&&p.isAlive()&&p.id()!=="agent").length/OPP, empty?1:0,
-        Math.min(1,enemies.size/6), weakest?Math.min(1,me.troops()/Math.max(1,weakest.troops())/2):1];
+        Math.min(1,enemies.size/6), weakest?Math.min(1,me.troops()/Math.max(1,weakest.troops())/2):1,
+        Math.min(1, me.allies().length/5), me.incomingAllianceRequests().length>0?1:0];
+      // always accept alliance offers (free protection), then let the policy choose an action
+      for (const req of me.incomingAllianceRequests()) req.accept();
       const { action } = policy.forward(obs);
       if (action === 0 && empty) game.addExecution(new AttackExecution(me.troops()/2, me, game.terraNullius().id()));
       else if (action === 1 && weakest) game.addExecution(new AttackExecution(me.troops()/3, me, weakest.id()));
+      else if (action === 3) { for (const e of enemies) if (me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
     }
     game.executeNextTick();
     if (rec && tick % 20 === 0) snap();
@@ -96,14 +100,14 @@ async function evaluate(policy: Policy, seeds: number[]): Promise<number> {
 // ---- (1+1) evolution strategy with multi-seed evaluation ----
 const K = 3, GENERATIONS = 50, SIGMA = 0.2;   // games per eval, generations, mutation size
 const VAL = [9001, 9002, 9003];               // fixed held-out seeds for progress readout
-const policy = new Policy(7);
+const policy = new Policy(9, 8, 4);
 let best = getFlat(policy);
 setFlat(policy, best);
 console.log(`gen  0: validation reward ${(await evaluate(policy, VAL)).toFixed(3)}`);
 let rng = 42; const rand = () => (rng = (Math.imul(rng,1103515245)+12345)>>>0)/0xffffffff;
 const gauss = () => Math.sqrt(-2*Math.log(1-rand()))*Math.cos(2*Math.PI*rand());
 for (let gen = 1; gen <= GENERATIONS; gen++) {
-  const seeds = [gen*7+1, gen*7+2].slice(0, K);
+  const seeds = Array.from({ length: K }, (_, i) => gen * 7 + 1 + i);
   setFlat(policy, best); const bestScore = await evaluate(policy, seeds);
   const cand = best.map(w => w + gauss()*SIGMA);
   setFlat(policy, cand); const candScore = await evaluate(policy, seeds);
