@@ -1,19 +1,17 @@
-// The REWARD scores how well one game went - the single number training maximizes.
-// Includes a SURVIVAL-TIME term so the signal varies continuously (a policy that lives
-// longer scores higher even before it can win) - this fixes the "flat 0.005" problem.
+// The REWARD scores a game. Territory is weighted heavily so the agent is pushed to EXPAND
+// (grab wilderness), with a survival-time term for a continuous gradient.
 
 export interface EpisodeStats {
-  peakLandShare: number;     // largest fraction of the map we ever controlled (0..1)
-  survivalFraction: number;  // ticks we stayed alive / max ticks (0..1)  <-- dense signal
-  survived: boolean;         // still alive at the end?
-  won: boolean;              // did we win?
+  peakLandShare: number;     // largest fraction of land ever controlled (0..1)
+  survivalFraction: number;  // ticks alive / max ticks (0..1)
+  survived: boolean;
+  won: boolean;
 }
-
 export function computeReward(s: EpisodeStats): number {
   return (
-    s.peakLandShare +               // territory
-    0.5 * s.survivalFraction +      // reward living longer (continuous gradient)
-    (s.survived ? 0.5 : 0) +        // bonus for surviving to the end
-    (s.won ? 5 : 0)                 // big bonus for winning
+    5 * s.peakLandShare +           // TERRITORY dominates — expand!
+    0.3 * s.survivalFraction +      // continuous "stay alive" gradient
+    (s.survived ? 0.3 : 0) +
+    (s.won ? 5 : 0)
   );
 }

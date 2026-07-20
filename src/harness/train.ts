@@ -18,7 +18,7 @@ import { Policy, getFlat, setFlat } from "../agent/policy";
 import { computeReward } from "../agent/reward";
 
 console.warn = () => {};
-const NUM_NATIONS = 6, BOTS = 30; // tribe-heavy (5:1)
+const NUM_NATIONS = 10, BOTS = 50; // tribe-heavy (5:1)
 const MAX_TICKS = 12000, MAX_GAME_MS = 30000; // end game on agent death, or these caps
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const md = path.join(dir, "../../vendor/OpenFrontIO/tests/testdata/maps/world");
@@ -105,11 +105,12 @@ async function playGame(policy: Policy, seed: number, rec?: any): Promise<number
         Math.min(1, me.allies().length/5), me.incomingAllianceRequests().length>0?1:0,
         Math.min(1, me.unitCount(UnitType.City)/8), me.unitCount(UnitType.MissileSilo)>0?1:0, coastal];
       for (const req of me.incomingAllianceRequests()) req.accept();
-      const { action } = policy.forward(obs);
+      const { action, troopFraction } = policy.forward(obs);
+      const commit = Math.floor(me.troops() * Math.max(0.1, Math.min(0.95, troopFraction)));
       const build = (u: UnitType, tile: number) => { const bt = me.canBuild(u, tile); if (bt) game.addExecution(new ConstructionExecution(me, u, bt)); };
-      if (action === 0 && empty) game.addExecution(new AttackExecution(me.troops()/2, me, game.terraNullius().id()));
-      else if (action === 1 && weakest) game.addExecution(new AttackExecution(me.troops()/3, me, weakest.id()));
-      else if (action === 2 && strongest) game.addExecution(new AttackExecution(me.troops()/3, me, strongest.id()));
+      if (action === 0 && empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
+      else if (action === 1 && weakest) game.addExecution(new AttackExecution(commit, me, weakest.id()));
+      else if (action === 2 && strongest) game.addExecution(new AttackExecution(commit, me, strongest.id()));
       // action 3 = wait
       else if (action === 4) { for (const e of enemies) if (me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
       else if (action === 5) build(UnitType.City, spawn);
@@ -120,7 +121,7 @@ async function playGame(policy: Policy, seed: number, rec?: any): Promise<number
       else if (action === 10) { // boat to weakest enemy across water
         const ge = game.players().filter(p=>p.isPlayer()&&p.isAlive()&&p.id()!=="agent"&&!me.isFriendly(p)).sort((a,b)=>a.troops()-b.troops())[0];
         if (ge) { let dst = -1; for (const t of ge.tiles()) { if (game.isShore(t)) { dst = t; break; } } if (dst < 0) for (const t of ge.tiles()) { dst = t; break; }
-          if (dst >= 0 && canBuildTransportShip(game, me, dst) !== false) game.addExecution(new TransportShipExecution(me, dst, me.troops()/4)); }
+          if (dst >= 0 && canBuildTransportShip(game, me, dst) !== false) game.addExecution(new TransportShipExecution(me, dst, commit)); }
       }
       else if (action === 11 && shoreTile >= 0) build(UnitType.Port, shoreTile);
     }

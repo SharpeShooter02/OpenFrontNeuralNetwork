@@ -263,3 +263,16 @@ switched to writing whole files via `cp` and verified brace balance after each.
   grid** each frame, so it always appears (white) while alive.
 - **Note:** changing obs/action dims means old weights are incompatible — **retrain** to
   regenerate `data/best_weights.json` before watching.
+
+## Step 17 — Learned troop commitment + land-weighted reward + denser map
+**The key fix:** troop commitment was a *hardcoded* fraction (expand=troops/2, attack=troops/3),
+so the agent had no "how much" lever. With every move dumping a fixed huge chunk of the army,
+early expansion was suicidal, so the learned-optimal behavior was passivity (wait until forced).
+Now the policy outputs an **extra sigmoid** = a troop-commitment fraction (0.1–0.95); the agent
+learns *how much* to commit, not just what to do. `commit = troops * troopFraction` drives all
+attacks/expansions/boats. (`Policy.nOut = nActions + 1`.)
+**Reward:** territory weighted **5×** (`5*peakLandShare + 0.3*survival + ...`) so grabbing
+wilderness is clearly worth it — pushes the agent to expand instead of turtle.
+**Population:** bumped to **10 nations + 50 tribes** (was 6/30) — map felt underpopulated.
+**Result:** validation reward now sits in the ~0.2 range (was 0.005) — real signal to climb.
+**Retrain required** (network output grew, so old weights are the wrong size).
