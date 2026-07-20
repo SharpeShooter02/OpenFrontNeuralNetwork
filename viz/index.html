@@ -73,6 +73,9 @@
   const landTotal = terrain.reduce((a, v) => a + v, 0) || (W * H);
   const WATER = [11, 26, 46], NEUTRAL = [46, 52, 64];
   const agentK = R.legend.findIndex((l) => l.name === "AGENT") + 1; // palette index of our agent (0 = not found)
+  const buildingFrames = R.buildingFrames || [], goldFrames = R.goldFrames || [];
+  const BTYPES = { 1:["#ffd700","Cities"], 2:["#00e5ff","Ports"], 3:["#ff8c00","Factories"], 4:["#ff3b3b","Silos"], 5:["#c0c0c0","Defense"], 6:["#3dff7a","SAM"] };
+  const fmtGold = (g) => (g >= 1000 ? (g/1000).toFixed(1) + "k" : "" + (g || 0));
 
   // layout
   document.body.insertAdjacentHTML("afterbegin",
@@ -86,6 +89,7 @@
       '<div class="row"><label>Speed</label><input id="speed" type="range" min="1" max="60" value="12"></div>' +
       '<div class="muted" id="tickinfo"></div>' +
       '<div id="board"></div>' +
+      '<div id="buildings" style="margin-top:14px;border-top:1px solid #1e2530;padding-top:10px;font-size:12px"></div>' +
     '</div>');
 
   const canvas = document.getElementById("map");
@@ -111,6 +115,16 @@
     octx.putImageData(img, 0, 0);
     ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
 
+    // draw buildings on the map (small squares colored by type; white outline = ours)
+    const bf = buildingFrames[fi] || [], gf = goldFrames[fi] || [];
+    const bs = Math.max(3, SCALE + 1);
+    for (let i = 0; i < bf.length; i += 3) {
+      const idx = bf[i], type = bf[i+1], owner = bf[i+2];
+      const bx = (idx % W) * SCALE + (SCALE - bs) / 2, by = ((idx / W) | 0) * SCALE + (SCALE - bs) / 2;
+      ctx.fillStyle = (BTYPES[type] || ["#fff"])[0]; ctx.fillRect(bx, by, bs, bs);
+      ctx.lineWidth = 1; ctx.strokeStyle = owner === agentK ? "#ffffff" : "rgba(0,0,0,0.5)"; ctx.strokeRect(bx, by, bs, bs);
+    }
+
     // scoreboard
     const counts = new Array(R.legend.length + 1).fill(0);
     for (let i = 0; i < buf.length; i++) counts[buf[i]]++;
@@ -120,13 +134,19 @@
     document.getElementById("board").innerHTML = rows.slice(0, 12).map(([k, n]) =>
       '<div class="bar"><span class="chip" style="background:' + R.legend[k-1].color + '"></span>' +
       '<span class="name">' + R.legend[k-1].name + '</span>' +
+      '<span class="pct" style="color:#ffd24d;min-width:46px">' + fmtGold(gf[k-1]) + 'g</span>' +
       '<span class="pct">' + (100 * n / landTotal).toFixed(1) + '%</span></div>').join("") || '<div class="muted">no territory yet</div>';
     // permanent AGENT readout (it's usually too small to appear in the top-12 board)
     if (agentK > 0) {
       const an = counts[agentK];
       document.getElementById("agentbar").innerHTML =
         '<span class="chip" style="background:#ffffff"></span><span class="name">AGENT</span>' +
-        '<span class="pct">' + (an > 0 ? an + " tiles · " + (100 * an / landTotal).toFixed(2) + "%" : "eliminated") + '</span>';
+        '<span class="pct">' + (an > 0 ? an + " tiles · " + (100 * an / landTotal).toFixed(2) + "% · " + fmtGold(gf[agentK-1]) + "g" : "eliminated") + '</span>';
+      // our buildings by type (bottom panel)
+      const bc = {1:0,2:0,3:0,4:0,5:0,6:0};
+      for (let i = 0; i < bf.length; i += 3) if (bf[i+2] === agentK) bc[bf[i+1]]++;
+      document.getElementById("buildings").innerHTML = '<b>Our buildings</b><br>' +
+        Object.keys(BTYPES).map((t) => '<span style="display:inline-block;margin:4px 12px 0 0"><span style="display:inline-block;width:9px;height:9px;background:' + BTYPES[t][0] + ';border-radius:2px;margin-right:5px;vertical-align:middle"></span>' + BTYPES[t][1] + ' <b>' + bc[t] + '</b></span>').join("");
     } else {
       document.getElementById("agentbar").style.display = "none";
     }

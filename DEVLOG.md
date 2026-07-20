@@ -195,6 +195,36 @@ death@3618). Untrained baseline reward jumped 0.001 → ~0.19 from alliances alo
 **Note:** changing the observation/action size means old 7-input weights are incompatible —
 retrain from scratch. **Next:** building (cities for economy).
 
+## Step 13 — Economy: build cities
+**Added:** a 5th action `buildCity` (`ConstructionExecution` of a `City` near our spawn via
+`me.canBuild(...)`) and a `cities` observation feature. Policy now `10 inputs → 5 actions`.
+**Verified it matters:** a single city ~doubled troop count (300k → 562k) — cities boost
+troop growth, so this is a real economy lever.
+
+**Important limitation (the "where" problem):** the scalar policy only chooses *when* to
+build; the *placement* is a hardcoded heuristic (near spawn). It literally cannot see or
+reason about *where* to place buildings — e.g. along rail lines. Learning placement needs
+the spatial upgrade: (1) add a rails/stations channel to the spatial observation, (2) swap
+the scalar MLP for a **CNN** over the map channels, (3) give it a **spatial action head**
+(output a probability map over tiles = "build HERE"). That's the standard AlphaStar-style
+technique — a bigger jump (larger action space, more compute), but not far-fetched. It's
+the natural next architectural milestone.
+
+## Step 14 — Full action toolkit (10 actions)
+**Added:** the rest of the land-relevant moves so the agent has (most of) what a Nation has:
+`attackStrongest`, `buildDefensePost`, `buildMissileSilo`, `buildSAMLauncher`, and
+`launchNuke` (atom bomb at the strongest enemy, gated on owning a missile silo). Plus a
+`hasSilo` observation feature. Policy is now **11 inputs → 10 actions** (hidden layer bumped
+to 16). Verified all APIs fire (nuke launched at tick 220 in a test); pricey structures are
+naturally gated by gold via `canBuild`. Naval (ports/boats/warships) skipped — the training
+map is all land; add them when training on a water map.
+
+**Expected trade-off:** 10 actions is a *big* space for a (1+1) evolution strategy to
+explore with a tiny MLP — training gets slower and noisier, and it may not master the
+advanced moves (nukes need the build-silo-then-launch sequence). That difficulty is itself
+the argument for the next era: a CNN policy + spatial action head + **gradient-based**
+learning (PyTorch), which explores large action spaces far more efficiently.
+
 ---
 
 ## Git workflow (how we commit going forward)
@@ -204,3 +234,32 @@ git add -A
 git commit -m "Step N: <short title>" -m "<why + result, mirroring the DEVLOG entry>"
 git push
 ```
+
+## Step 15 — Full world map + boats + time caps
+**Changed:** training and watching now run on the **full world map** (2000×1000, ~70% water)
+with `map4x` as the mini-map (needed for water pathfinding / nav-mesh). Added two naval
+actions — **`boatAttack`** (transport ship to the weakest enemy across water, via
+`TransportShipExecution` gated by `canBuildTransportShip`) and **`buildPort`** (on an owned
+shore tile) — plus a **`coastal`** observation feature. Policy is now **12 inputs → 12
+actions**. Games **end when the agent dies**, or at `MAX_TICKS` (12000), or a wall-clock
+`MAX_GAME_MS` safety cap. Agent spawns at the nearest unowned land to a seed-varied point,
+so it learns from different continents. `run_agent.ts` now **loads `data/best_weights.json`**
+so you watch the *trained* agent.
+
+**Note:** the create-only mount silently truncated several files during incremental Edits;
+switched to writing whole files via `cp` and verified brace balance after each.
+
+## Step 16 — Tribe-heavy, dense reward, faster training, visible agent
+- **Ratio:** flipped to **6 nations / 30 tribes (5:1)** — tribes are the farmable early game.
+- **Reward shaping:** added a **survival-time** term (`0.5 * ticksAlive/MAX_TICKS`) so the
+  reward varies continuously instead of sitting at a flat ~0.005. A policy that lives longer
+  now scores measurably higher — the gradient the evolution strategy was missing.
+- **Speed:** training now uses the `map4x` world (1000×500, still ~68% water) instead of the
+  full 2000×1000 — ~4× fewer tiles, ~4× faster. (The "40ms" was just `GameImpl` construction;
+  a full-world game is ~1–2s, so ~300 games = ~10 min.) `run_agent.ts` stays on the full world
+  for watching.
+- **Visible agent:** the pooled replay was too coarse to show the tiny agent (so the viewer
+  said "eliminated" while it was alive). Fix: **stamp the agent's own tiles onto the pooled
+  grid** each frame, so it always appears (white) while alive.
+- **Note:** changing obs/action dims means old weights are incompatible — **retrain** to
+  regenerate `data/best_weights.json` before watching.

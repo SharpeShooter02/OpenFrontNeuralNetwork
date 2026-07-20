@@ -1,9 +1,7 @@
-// STEP 7: the real environment — WORLD map, NATIONS + tribes. Our agent still plays
-// its hand-written policy. Replay is pooled down to a fixed small grid because the raw
-// 2000x1000 map is too big to store or (later) feed a network.
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+// Watch the agent on the FULL WORLD map. Loads trained weights if present. Tribe-heavy
+// opponents; records territory + buildings + gold, and stamps the agent's tiles so it's
+// always visible even when small.
+import fs from "fs"; import path from "path"; import { fileURLToPath } from "url";
 import { Config } from "../../vendor/OpenFrontIO/src/core/configuration/Config";
 import { createGame } from "../../vendor/OpenFrontIO/src/core/game/GameImpl";
 import { genTerrainFromBin } from "../../vendor/OpenFrontIO/src/core/game/TerrainMapLoader";
@@ -11,21 +9,20 @@ import { Executor } from "../../vendor/OpenFrontIO/src/core/execution/ExecutionM
 import { WinCheckExecution } from "../../vendor/OpenFrontIO/src/core/execution/WinCheckExecution";
 import { SpawnExecution } from "../../vendor/OpenFrontIO/src/core/execution/SpawnExecution";
 import { AttackExecution } from "../../vendor/OpenFrontIO/src/core/execution/AttackExecution";
-import { Policy, ACTIONS } from "../agent/policy";
+import { ConstructionExecution } from "../../vendor/OpenFrontIO/src/core/execution/ConstructionExecution";
+import { NukeExecution } from "../../vendor/OpenFrontIO/src/core/execution/NukeExecution";
+import { TransportShipExecution } from "../../vendor/OpenFrontIO/src/core/execution/TransportShipExecution";
+import { canBuildTransportShip } from "../../vendor/OpenFrontIO/src/core/game/TransportShipUtils";
+import { Cell, Difficulty, GameMapType, GameMapSize, GameMode, GameType, Nation, Player, PlayerInfo, PlayerType, UnitType } from "../../vendor/OpenFrontIO/src/core/game/Game";
+import { Policy, ACTIONS, setFlat } from "../agent/policy";
 import { computeReward } from "../agent/reward";
-import { PseudoRandom } from "../../vendor/OpenFrontIO/src/core/PseudoRandom";
-import {
-  Cell, Difficulty, GameMapType, GameMapSize, GameMode, GameType,
-  Nation, Player, PlayerInfo, PlayerType, UnitType,
-} from "../../vendor/OpenFrontIO/src/core/game/Game";
 
-// silence the engine's noisy "cannot build ..." warnings (Nations failing to place a structure)
 const _warn = console.warn.bind(console);
-console.warn = (...args: any[]) => { if (typeof args[0] === "string" && args[0].startsWith("cannot build")) return; _warn(...args); };
+console.warn = (...a: any[]) => { if (typeof a[0] === "string" && a[0].startsWith("cannot build")) return; _warn(...a); };
 
 const gameID = "agent_world";
-const FRAME_EVERY = 30, DECISION_EVERY = 20, BOTS = 20;
-
+const NUM_NATIONS = 6, BOTS = 30;                 // tribe-heavy (5:1)
+const FRAME_EVERY = 30, DECISION_EVERY = 20, MAX_TICKS = 12000, MAX_GAME_MS = 60000;
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const md = path.join(dir, "../../vendor/OpenFrontIO/tests/testdata/maps/world");
 const man = JSON.parse(fs.readFileSync(path.join(md, "manifest.json"), "utf8"));
@@ -34,174 +31,119 @@ const mini = await genTerrainFromBin(man.map4x, fs.readFileSync(path.join(md, "m
 
 const cfg: any = { gameMap: GameMapType.World, gameMapSize: GameMapSize.Normal, gameMode: GameMode.FFA,
   gameType: GameType.Singleplayer, difficulty: Difficulty.Medium, nations: "default",
-  donateGold: false, donateTroops: false, bots: BOTS, infiniteGold: false, infiniteTroops: false,
-  instantBuild: false, randomSpawn: false };
+  donateGold: false, donateTroops: false, bots: BOTS, infiniteGold: false, infiniteTroops: false, instantBuild: false, randomSpawn: false };
 const config = new Config(cfg, null as any, false);
-
-// build Nation objects from the manifest (mirrors the engine's createNationsForGame)
-const rng = new PseudoRandom(12345);
-const nations: Nation[] = (man.nations || []).map((n: any) =>
-  new Nation(n.coordinates ? new Cell(n.coordinates[0], n.coordinates[1]) : undefined,
-    new PlayerInfo(n.name, PlayerType.Nation, null, rng.nextID())));
+const W = gameMap.width(), H = gameMap.height();
+let seed = 777; const rnd = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 0xffffffff;
+const nations: Nation[] = [];
+for (let i = 0; i < NUM_NATIONS; i++) { let x, y, t; do { x = Math.floor(rnd()*W); y = Math.floor(rnd()*H); t = gameMap.ref(x,y); } while (!gameMap.isLand(t)); nations.push(new Nation(new Cell(x,y), new PlayerInfo("Nat"+i, PlayerType.Nation, null, "nat"+i))); }
 
 const game = createGame([], nations, gameMap, mini, config);
-
-// our agent
 const AGENT_ID = "agent";
 const agentInfo = new PlayerInfo("AGENT", PlayerType.Human, null, AGENT_ID);
-function findSpawnTile(): number {
-  const cx = Math.floor(game.width() / 2), cy = Math.floor(game.height() / 2);
-  for (let r = 0; r < Math.max(game.width(), game.height()); r++)
-    for (let dy = -r; dy <= r; dy += Math.max(1, r)) for (let dx = -r; dx <= r; dx += Math.max(1, r)) {
-      const x = cx + dx, y = cy + dy;
-      if (x < 0 || y < 0 || x >= game.width() || y >= game.height()) continue;
-      const t = game.ref(x, y);
-      if (game.isLand(t) && !game.isImpassable(t) && !game.hasOwner(t)) return t;
-    }
-  throw new Error("no spawn tile");
-}
 const exec = new Executor(game, gameID, undefined);
-if (config.spawnNations()) game.addExecution(...exec.nationExecutions());
-if (config.bots() > 0) game.addExecution(...exec.spawnTribes(config.bots()));
+game.addExecution(...exec.nationExecutions());
+game.addExecution(...exec.spawnTribes(BOTS));
 game.addExecution(new WinCheckExecution());
-
-// run the spawn phase so nations place themselves, then end it
 for (let sp = 0; sp < 150; sp++) game.executeNextTick();
 game.endSpawnPhase();
-
-// now that nations/tribes have spawned, drop in our agent on free land
 game.addPlayer(agentInfo);
-const spawnTile = findSpawnTile();
+let spawnTile = -1, bd = Infinity;
+for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) { const t = game.ref(x, y);
+  if (game.isLand(t) && !game.isImpassable(t) && !game.hasOwner(t)) { const d = (x-W/2)*(x-W/2)+(y-H/2)*(y-H/2); if (d < bd) { bd = d; spawnTile = t; } } }
 game.addExecution(new SpawnExecution(gameID, agentInfo, spawnTile));
-game.executeNextTick(); // let the agent spawn
+game.executeNextTick();
 const me = game.player(AGENT_ID);
-const OPPONENTS = nations.length + BOTS;
-const policy = new Policy(9, 8, 4); // 9 observations in, 4 actions out (random weights for now)
+const OPPONENTS = NUM_NATIONS + BOTS;
 
-// SCALAR OBSERVATION (7 normalized numbers)
-function observe(): { labels: string[]; values: number[] } {
-  const landTotal = game.numLandTiles(); const troops = me.troops();
-  let emptyAdj = 0; const enemies = new Set<Player>();
-  for (const t of me.borderTiles()) game.forEachNeighbor(t, (nb) => {
-    if (!game.isLand(nb) || game.isImpassable(nb)) return;
-    if (game.ownerID(nb) === me.smallID()) return;
-    if (!game.hasOwner(nb)) { emptyAdj = 1; return; }
-    const o = game.playerBySmallID(game.ownerID(nb)); if (o.isPlayer() && !me.isFriendly(o)) enemies.add(o);
-  });
-  const weakest = [...enemies].sort((a, b) => a.troops() - b.troops())[0];
-  const enemiesAlive = game.players().filter((p) => p.isPlayer() && p.isAlive() && p.id() !== AGENT_ID).length;
-  const labels = ["landShare","troops","gold","enemiesAlive","emptyAdj","enemyNbrs","vsWeakest","allies","incomingReq"];
-  const values = [me.numTilesOwned()/landTotal, Math.min(1,troops/200000), Math.min(1,Number(me.gold())/200000),
-    enemiesAlive/OPPONENTS, emptyAdj, Math.min(1,enemies.size/6),
-    weakest ? Math.min(1, troops/Math.max(1,weakest.troops())/2) : 1,
-    Math.min(1, me.allies().length/5), me.incomingAllianceRequests().length > 0 ? 1 : 0];
-  return { labels, values };
-}
+const policy = new Policy(12, 16, 12);
+const wPath = path.join(dir, "../../data/best_weights.json");
+if (fs.existsSync(wPath)) { try { setFlat(policy, JSON.parse(fs.readFileSync(wPath, "utf8"))); console.log("loaded trained weights"); } catch { console.log("weights unreadable; random"); } }
+else console.log("no trained weights; random policy");
 
-// SPATIAL OBSERVATION: 8 full-map channels (see DEVLOG step 6)
-const STRUCT_TYPES = new Set<UnitType>([UnitType.City,UnitType.Port,UnitType.Factory,UnitType.MissileSilo,UnitType.DefensePost,UnitType.SAMLauncher]);
-function observeSpatial() {
-  const W = game.width(), H = game.height(); const mk = () => new Uint8Array(W*H);
-  const mine=mk(),hostile=mk(),allied=mk(),neutral=mk(),blocked=mk(),fallout=mk(),myStruct=mk(),enemyStruct=mk();
-  for (let y=0;y<H;y++) for (let x=0;x<W;x++){ const t=game.ref(x,y), i=y*W+x;
-    if (!game.isLand(t)||game.isImpassable(t)){ blocked[i]=1; continue; }
-    if (game.hasFallout(t)) fallout[i]=1;
-    if (!game.hasOwner(t)){ neutral[i]=1; continue; }
-    const sid=game.ownerID(t);
-    if (sid===me.smallID()) mine[i]=1;
-    else { const o=game.playerBySmallID(sid); if (o.isPlayer()&&me.isFriendly(o)) allied[i]=1; else hostile[i]=1; } }
-  for (const u of game.units()){ if(!u.isActive()||!STRUCT_TYPES.has(u.type())) continue;
-    const i=game.y(u.tile())*W+game.x(u.tile()); if(u.owner().smallID()===me.smallID()) myStruct[i]=1; else enemyStruct[i]=1; }
-  return { channels:["mine","hostile","allied","neutral","blocked","fallout","myStruct","enemyStruct"],
-           data:[mine,hostile,allied,neutral,blocked,fallout,myStruct,enemyStruct] };
-}
-
-// ---- pooled replay recording (fixed small grid) ----
-const W = game.width(), H = game.height();
-const DS = Math.max(1, Math.ceil(Math.max(W, H) / 240)); // downsample factor
+const DS = Math.max(1, Math.ceil(Math.max(W, H) / 240));
 const RW = Math.ceil(W / DS), RH = Math.ceil(H / DS);
-const PALETTE = ["#e6194B","#3cb44b","#ffe119","#4363d8","#f58231","#911eb4","#42d4f4","#f032e6","#bfef45","#fabed4","#469990","#dcbeff","#9A6324","#800000","#808000","#000075"];
+const PAL = ["#e6194B","#3cb44b","#ffe119","#4363d8","#f58231","#911eb4","#42d4f4","#f032e6","#bfef45","#fabed4","#469990","#dcbeff","#9A6324","#800000","#808000","#000075"];
+const TC: any = { [UnitType.City]:1, [UnitType.Port]:2, [UnitType.Factory]:3, [UnitType.MissileSilo]:4, [UnitType.DefensePost]:5, [UnitType.SAMLauncher]:6 };
 const terrain = new Uint8Array(RW * RH);
-for (let ry = 0; ry < RH; ry++) for (let rx = 0; rx < RW; rx++) {
-  const t = game.ref(Math.min(W - 1, rx * DS), Math.min(H - 1, ry * DS));
-  terrain[ry * RW + rx] = game.isLand(t) && !game.isImpassable(t) ? 1 : 0;
-}
+for (let ry = 0; ry < RH; ry++) for (let rx = 0; rx < RW; rx++) { const t = game.ref(Math.min(W-1,rx*DS), Math.min(H-1,ry*DS)); terrain[ry*RW+rx] = game.isLand(t) && !game.isImpassable(t) ? 1 : 0; }
 const idToIdx = new Map<number, number>();
 const legend: { name: string; color: string }[] = [];
-const deltas: string[] = []; const frameTicks: number[] = [];
+const deltas: string[] = []; const frameTicks: number[] = []; const buildingFrames: number[][] = []; const goldFrames: number[][] = [];
 let prev = new Uint8Array(RW * RH);
-function ownerIdxAt(x: number, y: number): number {
-  const t = game.ref(x, y);
-  if (!game.hasOwner(t)) return 0;
-  const sid = game.ownerID(t);
-  let idx = idToIdx.get(sid);
-  if (idx === undefined) { idx = legend.length + 1; idToIdx.set(sid, idx);
-    const p: any = game.playerBySmallID(sid);
-    legend.push({ name: p?.name?.() ?? `#${sid}`, color: p?.id?.() === AGENT_ID ? "#ffffff" : PALETTE[(idx - 1) % PALETTE.length] });
-  }
-  return idx;
-}
+function ownerAt(x: number, y: number): number { const t = game.ref(x, y); if (!game.hasOwner(t)) return 0; const sid = game.ownerID(t);
+  let k = idToIdx.get(sid); if (k === undefined) { k = legend.length + 1; idToIdx.set(sid, k); const p: any = game.playerBySmallID(sid);
+    legend.push({ name: p?.name?.() ?? `#${sid}`, color: p?.id?.() === AGENT_ID ? "#ffffff" : PAL[(k-1)%PAL.length] }); } return k; }
 function snapshot() {
   const cur = new Uint8Array(RW * RH);
-  for (let ry = 0; ry < RH; ry++) for (let rx = 0; rx < RW; rx++)
-    cur[ry * RW + rx] = ownerIdxAt(Math.min(W - 1, rx * DS), Math.min(H - 1, ry * DS));
-  const changed: number[] = []; for (let i = 0; i < cur.length; i++) if (cur[i] !== prev[i]) changed.push(i, cur[i]);
-  const n = changed.length / 2; const buf = new Uint8Array(n * 5); const dv = new DataView(buf.buffer);
-  for (let k = 0; k < n; k++) { dv.setUint32(k * 5, changed[k * 2], true); dv.setUint8(k * 5 + 4, changed[k * 2 + 1]); }
+  for (let ry = 0; ry < RH; ry++) for (let rx = 0; rx < RW; rx++) cur[ry*RW+rx] = ownerAt(Math.min(W-1,rx*DS), Math.min(H-1,ry*DS));
+  if (me.isAlive()) { let ak = idToIdx.get(me.smallID()); if (ak === undefined) { ak = legend.length+1; idToIdx.set(me.smallID(), ak); legend.push({ name: "AGENT", color: "#ffffff" }); }
+    for (const t of me.tiles()) cur[Math.min(RH-1,Math.floor(game.y(t)/DS))*RW + Math.min(RW-1,Math.floor(game.x(t)/DS))] = ak; }
+  const ch: number[] = []; for (let i = 0; i < cur.length; i++) if (cur[i] !== prev[i]) ch.push(i, cur[i]);
+  const nn = ch.length/2; const buf = new Uint8Array(nn*5); const dv = new DataView(buf.buffer);
+  for (let k = 0; k < nn; k++) { dv.setUint32(k*5, ch[k*2], true); dv.setUint8(k*5+4, ch[k*2+1]); }
   deltas.push(Buffer.from(buf).toString("base64")); frameTicks.push(game.ticks()); prev = cur;
+  const bld: number[] = []; for (const u of game.units()) { if (!u.isActive()) continue; const c = TC[u.type()]; if (!c) continue; const tt = u.tile();
+    const rx = Math.min(RW-1,Math.floor(game.x(tt)/DS)), ry = Math.min(RH-1,Math.floor(game.y(tt)/DS)); const k = idToIdx.get(u.owner().smallID()); bld.push(ry*RW+rx, c, k ?? 0); }
+  buildingFrames.push(bld);
+  const gold: number[] = new Array(legend.length).fill(0);
+  for (const pl of game.players()) { if (!pl.isPlayer()) continue; const k = idToIdx.get(pl.smallID()); if (k !== undefined) gold[k-1] = Math.round(Number(pl.gold())); }
+  goldFrames.push(gold);
 }
 
-const STR = new Set([UnitType.City,UnitType.Port,UnitType.Factory,UnitType.MissileSilo,UnitType.DefensePost,UnitType.SAMLauncher]);
-console.log(`WORLD ${W}x${H} pooled to ${RW}x${RH} | ${nations.length} nations + ${BOTS} tribes | agent at (${game.x(spawnTile)},${game.y(spawnTile)})`);
-let tick = 0;
-let peakTiles = 0; // track the most land we ever held (for the reward)
-for (; tick < 6000; tick++) {
+console.log(`WORLD ${W}x${H} | ${NUM_NATIONS} nations + ${BOTS} tribes`);
+const startMs = performance.now();
+let tick = 0, peakTiles = 0, lastAlive = 0;
+for (; tick < MAX_TICKS; tick++) {
   if (me.isAlive() && tick % DECISION_EVERY === 0 && me.troops() > 1) {
-    let emptyLandAdjacent = false; const enemies = new Set<Player>();
-    for (const t of me.borderTiles()) game.forEachNeighbor(t, (nb) => {
-      if (!game.isLand(nb) || game.isImpassable(nb)) return;
-      if (game.ownerID(nb) === me.smallID()) return;
-      if (!game.hasOwner(nb)) { emptyLandAdjacent = true; return; }
-      const o = game.playerBySmallID(game.ownerID(nb));
-      if (o.isPlayer() && !me.isFriendly(o)) enemies.add(o);
-    });
-    const weakest = [...enemies].sort((a, b) => a.troops() - b.troops())[0];
-    // always accept alliance offers (free protection), then let the policy choose
+    let empty = false, coastal = 0, shoreTile = -1; const enemies = new Set<Player>();
+    for (const t of me.borderTiles()) {
+      if (game.isShore(t)) { coastal = 1; if (shoreTile < 0) shoreTile = t; }
+      game.forEachNeighbor(t, (nb) => {
+        if (!game.isLand(nb) || game.isImpassable(nb)) return;
+        if (game.ownerID(nb) === me.smallID()) return;
+        if (!game.hasOwner(nb)) { empty = true; return; }
+        const o = game.playerBySmallID(game.ownerID(nb)); if (o.isPlayer() && !me.isFriendly(o)) enemies.add(o);
+      });
+    }
+    const sorted = [...enemies].sort((a, b) => a.troops() - b.troops());
+    const weakest = sorted[0], strongest = sorted[sorted.length - 1];
+    const obs = [me.numTilesOwned()/game.numLandTiles(), Math.min(1,me.troops()/200000), Math.min(1,Number(me.gold())/200000),
+      game.players().filter(p=>p.isPlayer()&&p.isAlive()&&p.id()!==AGENT_ID).length/OPPONENTS, empty?1:0,
+      Math.min(1,enemies.size/6), weakest?Math.min(1,me.troops()/Math.max(1,weakest.troops())/2):1,
+      Math.min(1, me.allies().length/5), me.incomingAllianceRequests().length>0?1:0,
+      Math.min(1, me.unitCount(UnitType.City)/8), me.unitCount(UnitType.MissileSilo)>0?1:0, coastal];
     for (const req of me.incomingAllianceRequests()) req.accept();
-    // THE POLICY NETWORK chooses the action from the observation
-    const { action, probs } = policy.forward(observe().values);
-    if (action === 0 && emptyLandAdjacent) game.addExecution(new AttackExecution(me.troops() / 2, me, game.terraNullius().id()));
-    else if (action === 1 && weakest) game.addExecution(new AttackExecution(me.troops() / 3, me, weakest.id()));
-    else if (action === 3) { for (const e of enemies) if (me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
-    // action 2 = wait (do nothing)
-    if (tick % 100 === 0) console.log(`   policy: probs=[${probs.map((p) => p.toFixed(2)).join(", ")}] -> ${ACTIONS[action]}`);
+    const { action } = policy.forward(obs);
+    const build = (u: UnitType, tile: number) => { const bt = me.canBuild(u, tile); if (bt) game.addExecution(new ConstructionExecution(me, u, bt)); };
+    if (action === 0 && empty) game.addExecution(new AttackExecution(me.troops()/2, me, game.terraNullius().id()));
+    else if (action === 1 && weakest) game.addExecution(new AttackExecution(me.troops()/3, me, weakest.id()));
+    else if (action === 2 && strongest) game.addExecution(new AttackExecution(me.troops()/3, me, strongest.id()));
+    else if (action === 4) { for (const e of enemies) if (me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
+    else if (action === 5) build(UnitType.City, spawnTile);
+    else if (action === 6) build(UnitType.DefensePost, spawnTile);
+    else if (action === 7) build(UnitType.MissileSilo, spawnTile);
+    else if (action === 8) build(UnitType.SAMLauncher, spawnTile);
+    else if (action === 9 && strongest && me.unitCount(UnitType.MissileSilo) > 0) { let tgt: number | null = null; for (const t of strongest.tiles()) { tgt = t; break; } if (tgt !== null) game.addExecution(new NukeExecution(UnitType.AtomBomb, me, tgt)); }
+    else if (action === 10) { const ge = game.players().filter(p=>p.isPlayer()&&p.isAlive()&&p.id()!==AGENT_ID&&!me.isFriendly(p)).sort((a,b)=>a.troops()-b.troops())[0];
+      if (ge) { let dst = -1; for (const t of ge.tiles()) { if (game.isShore(t)) { dst = t; break; } } if (dst < 0) for (const t of ge.tiles()) { dst = t; break; }
+        if (dst >= 0 && canBuildTransportShip(game, me, dst) !== false) game.addExecution(new TransportShipExecution(me, dst, me.troops()/4)); } }
+    else if (action === 11 && shoreTile >= 0) build(UnitType.Port, shoreTile);
+    if (tick % 1000 === 0) console.log(`tick ${tick}: ${ACTIONS[action]} | tiles=${me.numTilesOwned()} gold=${me.gold()}`);
   }
   game.executeNextTick();
-  if (me.isAlive()) peakTiles = Math.max(peakTiles, me.numTilesOwned());
+  if (me.isAlive()) { peakTiles = Math.max(peakTiles, me.numTilesOwned()); lastAlive = tick; }
   if (tick % FRAME_EVERY === 0) snapshot();
-  if (tick % 1000 === 0) {
-    const nat = game.players().filter(p => p.type() === PlayerType.Nation && p.isAlive()).length;
-    const structs = game.units().filter(u => u.isActive() && STR.has(u.type())).length;
-    console.log(`tick ${tick} | agent alive=${me.isAlive()} tiles=${me.numTilesOwned()} | nations alive=${nat} structures=${structs}`);
-    if (me.isAlive() && tick === 1000) {
-      const o = observe(); console.log("   scalar: " + o.labels.map((l,i)=>`${l}=${o.values[i].toFixed(2)}`).join("  "));
-      const sp = observeSpatial();
-      console.log("   channel sums: " + sp.channels.map((c,k)=>`${c}=${sp.data[k].reduce((a,v)=>a+v,0)}`).join("  "));
-    }
-  }
-  const aliveP = game.players().filter(p => p.isPlayer() && p.isAlive());
+  if (!me.isAlive() && tick > 50) break;
+  if (tick % 200 === 0 && performance.now() - startMs > MAX_GAME_MS) break;
+  const aliveP = game.players().filter((p) => p.isPlayer() && p.isAlive());
   if (aliveP.length <= 1) break;
 }
 snapshot();
-// ---- score this game with the reward ----
-const landTotal = game.numLandTiles();
-const survived = me.isAlive();
-const won = survived && me.numTilesOwned() >= 0.8 * landTotal;
-const stats = { peakLandShare: peakTiles / landTotal, survived, won };
-const reward = computeReward(stats);
-console.log(`REWARD = ${reward.toFixed(4)}  (peakLandShare=${stats.peakLandShare.toFixed(4)}, survived=${survived}, won=${won})`);
-
+const land = game.numLandTiles();
+const reward = computeReward({ peakLandShare: peakTiles/land, survivalFraction: lastAlive/MAX_TICKS, survived: me.isAlive(), won: me.isAlive() && me.numTilesOwned() >= 0.8*land });
+console.log(`REWARD = ${reward.toFixed(4)} (${me.isAlive() ? "survived to tick " + tick : "died at tick " + tick}, peakTiles=${peakTiles})`);
 const outDir = path.join(dir, "../../viz"); fs.mkdirSync(outDir, { recursive: true });
-const payload = { W: RW, H: RH, interval: FRAME_EVERY, winner: "(world demo)", terrain: Buffer.from(terrain).toString("base64"), legend, frameTicks, deltas };
+const payload = { W: RW, H: RH, interval: FRAME_EVERY, winner: "(world)", terrain: Buffer.from(terrain).toString("base64"), legend, frameTicks, deltas, buildingFrames, goldFrames };
 fs.writeFileSync(path.join(outDir, "replay.js"), "window.REPLAY = " + JSON.stringify(payload) + ";");
-console.log(`agent ${me.isAlive() ? "survived to tick " + tick : "died"} | wrote viz/replay.js (${deltas.length} frames, ${(fs.statSync(path.join(outDir,"replay.js")).size/1e6).toFixed(2)} MB, pooled ${RW}x${RH})`);
+console.log(`wrote viz/replay.js (${deltas.length} frames)`);
