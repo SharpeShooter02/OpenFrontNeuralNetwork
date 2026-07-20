@@ -19,7 +19,9 @@ import { Cell, Difficulty, GameMapType, GameMapSize, GameMode, GameType, Nation,
 
 console.log = () => {}; console.warn = () => {}; console.debug = () => {}; // keep stdout clean for JSON
 
-const NUM_NATIONS = 10, BOTS = 50, MAX_TICKS = 12000, DECIDE_EVERY = 20;
+// Density-matched to a real full-world game (~1 player / 1400 land tiles) on map4x's 157,860
+// land tiles: ~15 nations + ~100 tribes. Override via env for full-world (61/300) or tuning.
+const NUM_NATIONS = +(process.env.NUM_NATIONS ?? 15), BOTS = +(process.env.BOTS ?? 100), MAX_TICKS = 12000, DECIDE_EVERY = 20;
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const md = path.join(dir, "../../vendor/OpenFrontIO/tests/testdata/maps/world");
 const man = JSON.parse(fs.readFileSync(path.join(md, "manifest.json"), "utf8"));
@@ -57,15 +59,17 @@ function act(action: number, troopFraction: number) {
   const s = scan();
   for (const req of me.incomingAllianceRequests()) req.accept();
   const commit = Math.floor(me.troops() * Math.max(0.01, Math.min(1, troopFraction)));
+  // Build on a currently-owned tile (the fixed spawn tile is often captured by mid-game).
+  const ownedTile = () => { if (game.ownerID(spawn) === me.smallID()) return spawn; for (const t of me.tiles()) return t; return spawn; };
   const build = (u: UnitType, tile: number) => { const bt = me.canBuild(u, tile); if (bt) game.addExecution(new ConstructionExecution(me, u, bt)); };
   if (action === 0 && s.empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
   else if (action === 1 && s.weakest) game.addExecution(new AttackExecution(commit, me, s.weakest.id()));
   else if (action === 2 && s.strongest) game.addExecution(new AttackExecution(commit, me, s.strongest.id()));
   else if (action === 4) { for (const e of s.enemies) if (me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
-  else if (action === 5) build(UnitType.City, spawn);
-  else if (action === 6) build(UnitType.DefensePost, spawn);
-  else if (action === 7) build(UnitType.MissileSilo, spawn);
-  else if (action === 8) build(UnitType.SAMLauncher, spawn);
+  else if (action === 5) build(UnitType.City, ownedTile());
+  else if (action === 6) build(UnitType.DefensePost, ownedTile());
+  else if (action === 7) build(UnitType.MissileSilo, ownedTile());
+  else if (action === 8) build(UnitType.SAMLauncher, ownedTile());
   else if (action === 9 && s.strongest && me.unitCount(UnitType.MissileSilo) > 0) { let tgt: number | null = null; for (const t of s.strongest.tiles()) { tgt = t; break; } if (tgt !== null) game.addExecution(new NukeExecution(UnitType.AtomBomb, me, tgt)); }
   else if (action === 10) { const ge = game.players().filter((p: any)=>p.isPlayer()&&p.isAlive()&&p.id()!=="agent"&&!me.isFriendly(p)).sort((a: any,b: any)=>a.troops()-b.troops())[0];
     if (ge) { let dst = -1; for (const t of ge.tiles()) { if (game.isShore(t)) { dst = t; break; } } if (dst < 0) for (const t of ge.tiles()) { dst = t; break; }
@@ -82,8 +86,19 @@ async function reset(seed: number): Promise<number[]> {
   const config = new Config(cfg, null as any, false);
   let s = seed >>> 0; const rand = () => (s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 0xffffffff;
   W = gameMap.width(); H = gameMap.height();
+  // Real nations from the world manifest, scaled to map4x space and snapped to the nearest land.
+  const scaleX = W / man.map.width, scaleY = H / man.map.height;
+  const snapLand = (x: number, y: number) => {
+    for (let r = 0; r < 20; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+      if (gameMap.isLand(gameMap.ref(xx, yy))) return [xx, yy]; }
+    return [Math.max(0, Math.min(W - 1, x)), Math.max(0, Math.min(H - 1, y))]; };
+  const manNats: any[] = man.nations.filter((n: any) => n.coordinates);
+  const stride = NUM_NATIONS >= manNats.length ? 1 : Math.ceil(manNats.length / NUM_NATIONS);
+  const chosen = manNats.filter((_, i) => i % stride === 0).slice(0, NUM_NATIONS);
   const nations: Nation[] = [];
-  for (let i = 0; i < NUM_NATIONS; i++) { let x, y, t; do { x = Math.floor(rand()*W); y = Math.floor(rand()*H); t = gameMap.ref(x,y); } while (!gameMap.isLand(t)); nations.push(new Nation(new Cell(x,y), new PlayerInfo("Nat"+i, PlayerType.Nation, null, "nat"+i))); }
+  for (const mn of chosen) { const [x, y] = snapLand(Math.floor(mn.coordinates[0] * scaleX), Math.floor(mn.coordinates[1] * scaleY));
+    nations.push(new Nation(new Cell(x, y), new PlayerInfo(mn.name, PlayerType.Nation, null, "nat" + nations.length))); }
   game = createGame([], nations, gameMap, mini, config);
   const exec = new Executor(game, "env_" + seed, undefined);
   game.addExecution(...exec.nationExecutions()); game.addExecution(...exec.spawnTribes(BOTS)); game.addExecution(new WinCheckExecution());

@@ -292,3 +292,38 @@ actions (no PyTorch). **Verified:** Python drove full games over the pipe; rando
 negative reward (loses land), exactly as expected. The bridge works.
 **Next:** a PyTorch policy that reads obs and outputs action + troop fraction (part 2), then
 REINFORCE/PPO to actually learn (part 3).
+
+## Step 19 — PyTorch era, part 3: REINFORCE (and two env bugs it exposed)
+**Added:** `train_torch/reinforce.py` — vanilla policy gradient. Per step we collect
+`(log_prob, reward)`; per episode we compute discounted returns-to-go (γ=0.99); we pool a
+**batch** of episodes and normalize returns *across the batch* (baseline), then update with
+`loss = -Σ logπ · Â`. The discrete action is sampled from a `Categorical`; the troop fraction
+is now sampled from a `Normal` (learned std) so it, too, gets a gradient — the "how much" lever.
+Also `train_torch/diagnose.py` — loads the trained policy and prints WHAT it does (action
+histogram + decoded per-step trajectory).
+
+**Lesson 1 (the baseline bug):** the first version normalized returns **per-episode**, which
+whitens every game to zero-mean — erasing the across-game signal (a +0.6 survival and a −0.2
+death produce identical-magnitude gradients). Fix: pool a batch and normalize across it, so
+good games get positive advantages and bad games negative.
+
+**Lesson 2 (density):** the env was fabricating **10 random nations + 50 tribes** — ~2× too
+sparse *and* nations at fake positions. Switched to the **real 61 world-manifest nations**
+(coords scaled to map4x, snapped to land), counts configurable via env. Default is now
+**density-matched to a real full-world game** (~1 player / 1400 land tiles → 15 nations +
+100 tribes on map4x's 157,860 land tiles). Behaves like a real game: hundreds spawn, then
+consolidate to ~40 survivors. Fast: ~0.035 s/step even with 273 alive.
+
+**Lesson 3 (the build bug — why it "won't build cities"):** the behavioral trace showed the
+agent *does* get rich (gold reaches **1.9M**; the obs merely caps display at 200K), yet every
+build silently failed. Cause: the env built at the fixed initial `spawn` tile, but the engine's
+`validStructureSpawnTiles` requires the target tile be **currently owned**, and by mid-game the
+spawn tile is captured. Fix: build on a currently-owned tile. Verified — the agent now builds
+up to 3 cities as it grows, and the trained policy builds 1–2 in surviving games.
+
+**Result:** with the fixed env, REINFORCE shows a **weak early climb** (ma20 −0.13 → +0.045
+over ~150 episodes) then oscillates back toward 0 — the classic high-variance REINFORCE
+pattern (no trust region / value baseline). Economy is now reachable *and* functional, so the
+remaining problem is the learner, not the environment. **Next (part 4):** PPO with a
+value-function baseline for lower-variance, sustained learning; optionally light reward shaping
+toward economy.
