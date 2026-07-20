@@ -96,6 +96,29 @@ channel for each ahead of time. On the current all-land plains + tribe setup, th
 `blocked/fallout/struct/allied` channels read 0 — they'll light up once we switch to
 Nations on a real (water-containing) map. That opponent switch is the next step.
 
+## Step 7 — The real environment: world map, Nations + tribes
+**Changed:** `run_agent.ts` now runs the **world** map (2000×1000) with **61 Nations**
+built from the map manifest, plus 20 tribes. Replay is **pooled** to a fixed ~223×112
+grid (the raw 2M-tile map is too big to store or feed a network). Added
+`useDefineForClassFields: false` to `tsconfig.json`.
+
+**Three gotchas solved:**
+1. Nations spawn *only during the spawn phase* — we now run ~150 spawn ticks, then end it.
+2. A Human spawning in Singleplayer *ends the spawn phase*, so our agent is added **after**
+   the Nations/tribes have placed.
+3. `NationNukeBehavior` relies on legacy class-field init order — `tsx`/esbuild needs
+   `useDefineForClassFields: false` or it crashes (`this.game` undefined). **The real trap:**
+   a `"include": ["src/**/*.ts"]` in `tsconfig.json` scopes that compiler option to `src/`
+   only, so the vendored engine under `vendor/` never gets it and crashes. **Fix: remove
+   `include`** so the option applies to every transpiled file, engine included. (Also set
+   `"target": "ES2020"` to match the engine.) Reproduced in a faithful mini-repo:
+   with `include` → crash; without → Nations spawn and build normally.
+
+**Result:** Nations build structures (0 → 183) and eat the tribes; the previously-dark
+vision channels light up (`blocked` = ocean = 1.35M tiles, `enemyStruct` = 12 buildings).
+Our hand-policy that *crushed* the tribes now **dies by ~tick 2000** against Nations — the
+concrete motivation for learning a policy instead of hand-tuning one.
+
 ---
 
 ## Git workflow (how we commit going forward)

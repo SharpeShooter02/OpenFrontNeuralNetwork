@@ -1,7 +1,8 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ES2020",
     "module": "ESNext",
+    "useDefineForClassFields": false,
     "moduleResolution": "Bundler",
     "esModuleInterop": true,
     "allowJs": true,
@@ -9,6 +10,5 @@
     "skipLibCheck": true,
     "strict": false,
     "noEmit": true
-  },
-  "include": ["src/**/*.ts"]
+  }
 }

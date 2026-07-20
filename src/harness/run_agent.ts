@@ -1,12 +1,6 @@
-// STEP 1 (+ recording): add one player WE control (no brain yet), read its state,
-// AND record a replay so we can watch it in viz/index.html.
-//
-// Our player is drawn in bright WHITE so it stands out from the bots. With no brain
-// it just sits on its spawn and gets eaten around tick ~900 - that is the expected,
-// instructive result: it proves we can create/observe our player, and shows exactly
-// why it needs a brain (which we add in step 2).
-//
-// Run:  npm run agent      then open viz/index.html in a browser.
+// STEP 7: the real environment — WORLD map, NATIONS + tribes. Our agent still plays
+// its hand-written policy. Replay is pooled down to a fixed small grid because the raw
+// 2000x1000 map is too big to store or (later) feed a network.
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -17,239 +11,174 @@ import { Executor } from "../../vendor/OpenFrontIO/src/core/execution/ExecutionM
 import { WinCheckExecution } from "../../vendor/OpenFrontIO/src/core/execution/WinCheckExecution";
 import { SpawnExecution } from "../../vendor/OpenFrontIO/src/core/execution/SpawnExecution";
 import { AttackExecution } from "../../vendor/OpenFrontIO/src/core/execution/AttackExecution";
+import { PseudoRandom } from "../../vendor/OpenFrontIO/src/core/PseudoRandom";
 import {
-  Difficulty, GameMapType, GameMapSize, GameMode, GameType, Player, PlayerInfo, PlayerType, UnitType,
+  Cell, Difficulty, GameMapType, GameMapSize, GameMode, GameType,
+  Nation, Player, PlayerInfo, PlayerType, UnitType,
 } from "../../vendor/OpenFrontIO/src/core/game/Game";
 
-const gameID = "agent_game";
-const FRAME_EVERY = 20; // record a frame every N ticks
-const DECISION_EVERY = 20; // our bot makes a decision every N ticks
-const PALETTE = ["#e6194B","#3cb44b","#ffe119","#4363d8","#f58231","#911eb4","#42d4f4","#f032e6",
-  "#bfef45","#fabed4","#469990","#dcbeff","#9A6324","#800000","#808000","#000075"];
+const gameID = "agent_world";
+const FRAME_EVERY = 30, DECISION_EVERY = 20, BOTS = 20;
 
-// --- load the small plains map ---
 const dir = path.dirname(fileURLToPath(import.meta.url));
-const mapDir = path.join(dir, "../../vendor/OpenFrontIO/tests/testdata/maps/plains");
-const manifest = JSON.parse(fs.readFileSync(path.join(mapDir, "manifest.json"), "utf8"));
-const gameMap = await genTerrainFromBin(manifest.map, fs.readFileSync(path.join(mapDir, "map.bin")));
-const miniGameMap = await genTerrainFromBin(manifest.map4x, fs.readFileSync(path.join(mapDir, "map4x.bin")));
+const md = path.join(dir, "../../vendor/OpenFrontIO/tests/testdata/maps/world");
+const man = JSON.parse(fs.readFileSync(path.join(md, "manifest.json"), "utf8"));
+const gameMap = await genTerrainFromBin(man.map, fs.readFileSync(path.join(md, "map.bin")));
+const mini = await genTerrainFromBin(man.map4x, fs.readFileSync(path.join(md, "map4x.bin")));
 
-const gameConfig: any = {
-  gameMap: GameMapType.Plains, gameMapSize: GameMapSize.Normal,
-  gameMode: GameMode.FFA, gameType: GameType.Singleplayer, difficulty: Difficulty.Medium,
-  nations: "default", donateGold: false, donateTroops: false, bots: 6,
-  infiniteGold: false, infiniteTroops: false, instantBuild: false, randomSpawn: false,
-};
+const cfg: any = { gameMap: GameMapType.World, gameMapSize: GameMapSize.Normal, gameMode: GameMode.FFA,
+  gameType: GameType.Singleplayer, difficulty: Difficulty.Medium, nations: "default",
+  donateGold: false, donateTroops: false, bots: BOTS, infiniteGold: false, infiniteTroops: false,
+  instantBuild: false, randomSpawn: false };
+const config = new Config(cfg, null as any, false);
 
-const config = new Config(gameConfig, null as any, false);
-const game = createGame([], [], gameMap, miniGameMap, config);
+// build Nation objects from the manifest (mirrors the engine's createNationsForGame)
+const rng = new PseudoRandom(12345);
+const nations: Nation[] = (man.nations || []).map((n: any) =>
+  new Nation(n.coordinates ? new Cell(n.coordinates[0], n.coordinates[1]) : undefined,
+    new PlayerInfo(n.name, PlayerType.Nation, null, rng.nextID())));
 
-// --- (1) create OUR player and remember its id ---
+const game = createGame([], nations, gameMap, mini, config);
+
+// our agent
 const AGENT_ID = "agent";
 const agentInfo = new PlayerInfo("AGENT", PlayerType.Human, null, AGENT_ID);
-game.addPlayer(agentInfo);
-
-// --- (2) find an empty land tile near the center to spawn it on ---
 function findSpawnTile(): number {
   const cx = Math.floor(game.width() / 2), cy = Math.floor(game.height() / 2);
   for (let r = 0; r < Math.max(game.width(), game.height()); r++)
-    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    for (let dy = -r; dy <= r; dy += Math.max(1, r)) for (let dx = -r; dx <= r; dx += Math.max(1, r)) {
       const x = cx + dx, y = cy + dy;
       if (x < 0 || y < 0 || x >= game.width() || y >= game.height()) continue;
       const t = game.ref(x, y);
       if (game.isLand(t) && !game.isImpassable(t) && !game.hasOwner(t)) return t;
     }
-  throw new Error("no spawn tile found");
+  throw new Error("no spawn tile");
 }
-const spawnTile = findSpawnTile();
-
-// --- (3) queue executions: our spawn, the bots, and the win checker ---
-game.addExecution(new SpawnExecution(gameID, agentInfo, spawnTile));
 const exec = new Executor(game, gameID, undefined);
+if (config.spawnNations()) game.addExecution(...exec.nationExecutions());
 if (config.bots() > 0) game.addExecution(...exec.spawnTribes(config.bots()));
 game.addExecution(new WinCheckExecution());
+
+// run the spawn phase so nations place themselves, then end it
+for (let sp = 0; sp < 150; sp++) game.executeNextTick();
 game.endSpawnPhase();
 
-// --- replay recording (same delta format the viewer expects) ---
+// now that nations/tribes have spawned, drop in our agent on free land
+game.addPlayer(agentInfo);
+const spawnTile = findSpawnTile();
+game.addExecution(new SpawnExecution(gameID, agentInfo, spawnTile));
+game.executeNextTick(); // let the agent spawn
+const me = game.player(AGENT_ID);
+const OPPONENTS = nations.length + BOTS;
+
+// SCALAR OBSERVATION (7 normalized numbers)
+function observe(): { labels: string[]; values: number[] } {
+  const landTotal = game.numLandTiles(); const troops = me.troops();
+  let emptyAdj = 0; const enemies = new Set<Player>();
+  for (const t of me.borderTiles()) game.forEachNeighbor(t, (nb) => {
+    if (!game.isLand(nb) || game.isImpassable(nb)) return;
+    if (game.ownerID(nb) === me.smallID()) return;
+    if (!game.hasOwner(nb)) { emptyAdj = 1; return; }
+    const o = game.playerBySmallID(game.ownerID(nb)); if (o.isPlayer() && !me.isFriendly(o)) enemies.add(o);
+  });
+  const weakest = [...enemies].sort((a, b) => a.troops() - b.troops())[0];
+  const enemiesAlive = game.players().filter((p) => p.isPlayer() && p.isAlive() && p.id() !== AGENT_ID).length;
+  const labels = ["landShare","troops","gold","enemiesAlive","emptyAdj","enemyNbrs","vsWeakest"];
+  const values = [me.numTilesOwned()/landTotal, Math.min(1,troops/200000), Math.min(1,Number(me.gold())/200000),
+    enemiesAlive/OPPONENTS, emptyAdj, Math.min(1,enemies.size/6),
+    weakest ? Math.min(1, troops/Math.max(1,weakest.troops())/2) : 1];
+  return { labels, values };
+}
+
+// SPATIAL OBSERVATION: 8 full-map channels (see DEVLOG step 6)
+const STRUCT_TYPES = new Set<UnitType>([UnitType.City,UnitType.Port,UnitType.Factory,UnitType.MissileSilo,UnitType.DefensePost,UnitType.SAMLauncher]);
+function observeSpatial() {
+  const W = game.width(), H = game.height(); const mk = () => new Uint8Array(W*H);
+  const mine=mk(),hostile=mk(),allied=mk(),neutral=mk(),blocked=mk(),fallout=mk(),myStruct=mk(),enemyStruct=mk();
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++){ const t=game.ref(x,y), i=y*W+x;
+    if (!game.isLand(t)||game.isImpassable(t)){ blocked[i]=1; continue; }
+    if (game.hasFallout(t)) fallout[i]=1;
+    if (!game.hasOwner(t)){ neutral[i]=1; continue; }
+    const sid=game.ownerID(t);
+    if (sid===me.smallID()) mine[i]=1;
+    else { const o=game.playerBySmallID(sid); if (o.isPlayer()&&me.isFriendly(o)) allied[i]=1; else hostile[i]=1; } }
+  for (const u of game.units()){ if(!u.isActive()||!STRUCT_TYPES.has(u.type())) continue;
+    const i=game.y(u.tile())*W+game.x(u.tile()); if(u.owner().smallID()===me.smallID()) myStruct[i]=1; else enemyStruct[i]=1; }
+  return { channels:["mine","hostile","allied","neutral","blocked","fallout","myStruct","enemyStruct"],
+           data:[mine,hostile,allied,neutral,blocked,fallout,myStruct,enemyStruct] };
+}
+
+// ---- pooled replay recording (fixed small grid) ----
 const W = game.width(), H = game.height();
-const terrain = new Uint8Array(W * H);
-for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-  const t = game.ref(x, y);
-  terrain[y * W + x] = game.isLand(t) && !game.isImpassable(t) ? 1 : 0;
+const DS = Math.max(1, Math.ceil(Math.max(W, H) / 240)); // downsample factor
+const RW = Math.ceil(W / DS), RH = Math.ceil(H / DS);
+const PALETTE = ["#e6194B","#3cb44b","#ffe119","#4363d8","#f58231","#911eb4","#42d4f4","#f032e6","#bfef45","#fabed4","#469990","#dcbeff","#9A6324","#800000","#808000","#000075"];
+const terrain = new Uint8Array(RW * RH);
+for (let ry = 0; ry < RH; ry++) for (let rx = 0; rx < RW; rx++) {
+  const t = game.ref(Math.min(W - 1, rx * DS), Math.min(H - 1, ry * DS));
+  terrain[ry * RW + rx] = game.isLand(t) && !game.isImpassable(t) ? 1 : 0;
 }
 const idToIdx = new Map<number, number>();
 const legend: { name: string; color: string }[] = [];
-const deltas: string[] = [];
-const frameTicks: number[] = [];
-let prev = new Uint8Array(W * H);
-function ownerIdx(t: number): number {
+const deltas: string[] = []; const frameTicks: number[] = [];
+let prev = new Uint8Array(RW * RH);
+function ownerIdxAt(x: number, y: number): number {
+  const t = game.ref(x, y);
   if (!game.hasOwner(t)) return 0;
   const sid = game.ownerID(t);
   let idx = idToIdx.get(sid);
-  if (idx === undefined) {
-    idx = legend.length + 1;
-    idToIdx.set(sid, idx);
+  if (idx === undefined) { idx = legend.length + 1; idToIdx.set(sid, idx);
     const p: any = game.playerBySmallID(sid);
-    const isAgent = p?.id?.() === AGENT_ID;             // OUR player -> white
-    legend.push({ name: p?.name?.() ?? `#${sid}`, color: isAgent ? "#ffffff" : PALETTE[(idx - 1) % PALETTE.length] });
+    legend.push({ name: p?.name?.() ?? `#${sid}`, color: p?.id?.() === AGENT_ID ? "#ffffff" : PALETTE[(idx - 1) % PALETTE.length] });
   }
   return idx;
 }
 function snapshot() {
-  const cur = new Uint8Array(W * H);
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) cur[y * W + x] = ownerIdx(game.ref(x, y));
-  const changed: number[] = [];
-  for (let i = 0; i < cur.length; i++) if (cur[i] !== prev[i]) changed.push(i, cur[i]);
-  const n = changed.length / 2;
-  const buf = new Uint8Array(n * 5);
-  const dv = new DataView(buf.buffer);
+  const cur = new Uint8Array(RW * RH);
+  for (let ry = 0; ry < RH; ry++) for (let rx = 0; rx < RW; rx++)
+    cur[ry * RW + rx] = ownerIdxAt(Math.min(W - 1, rx * DS), Math.min(H - 1, ry * DS));
+  const changed: number[] = []; for (let i = 0; i < cur.length; i++) if (cur[i] !== prev[i]) changed.push(i, cur[i]);
+  const n = changed.length / 2; const buf = new Uint8Array(n * 5); const dv = new DataView(buf.buffer);
   for (let k = 0; k < n; k++) { dv.setUint32(k * 5, changed[k * 2], true); dv.setUint8(k * 5 + 4, changed[k * 2 + 1]); }
-  deltas.push(Buffer.from(buf).toString("base64"));
-  frameTicks.push(game.ticks());
-  prev = cur;
+  deltas.push(Buffer.from(buf).toString("base64")); frameTicks.push(game.ticks()); prev = cur;
 }
 
-const BOTS = config.bots();
-
-// OBSERVATION: turn the live game into a fixed list of numbers the policy can read.
-// The network never sees the game object — only this vector. If a fact isn't here,
-// the bot is blind to it. Values are scaled toward 0..1 because neural nets train
-// best when their inputs are small and in a similar range (this is "normalization").
-function observe(): { labels: string[]; values: number[] } {
-  const landTotal = game.numLandTiles();
-  const troops = me.troops();
-  // scan our border once: is empty land adjacent, and which enemies do we touch?
-  let emptyLandAdjacent = 0;
-  const enemies = new Set<Player>();
-  for (const t of me.borderTiles()) {
-    game.forEachNeighbor(t, (n) => {
-      if (!game.isLand(n) || game.isImpassable(n)) return;
-      if (game.ownerID(n) === me.smallID()) return;
-      if (!game.hasOwner(n)) { emptyLandAdjacent = 1; return; }
-      const o = game.playerBySmallID(game.ownerID(n));
+const STR = new Set([UnitType.City,UnitType.Port,UnitType.Factory,UnitType.MissileSilo,UnitType.DefensePost,UnitType.SAMLauncher]);
+console.log(`WORLD ${W}x${H} pooled to ${RW}x${RH} | ${nations.length} nations + ${BOTS} tribes | agent at (${game.x(spawnTile)},${game.y(spawnTile)})`);
+let tick = 0;
+for (; tick < 6000; tick++) {
+  if (me.isAlive() && tick % DECISION_EVERY === 0 && me.troops() > 1) {
+    let emptyLandAdjacent = false; const enemies = new Set<Player>();
+    for (const t of me.borderTiles()) game.forEachNeighbor(t, (nb) => {
+      if (!game.isLand(nb) || game.isImpassable(nb)) return;
+      if (game.ownerID(nb) === me.smallID()) return;
+      if (!game.hasOwner(nb)) { emptyLandAdjacent = true; return; }
+      const o = game.playerBySmallID(game.ownerID(nb));
       if (o.isPlayer() && !me.isFriendly(o)) enemies.add(o);
     });
-  }
-  const weakest = [...enemies].sort((a, b) => a.troops() - b.troops())[0];
-  const enemiesAlive = game.players().filter((p) => p.isPlayer() && p.isAlive() && p.id() !== AGENT_ID).length;
-
-  const labels = ["landShare", "troops", "gold", "enemiesAlive", "emptyAdj", "enemyNbrs", "vsWeakest"];
-  const values = [
-    me.numTilesOwned() / landTotal,                                        // share of the map we own (0..1)
-    Math.min(1, troops / 200000),                                          // our army size, scaled
-    Math.min(1, Number(me.gold()) / 200000),                               // our gold, scaled
-    enemiesAlive / BOTS,                                                   // fraction of enemies still alive
-    emptyLandAdjacent,                                                     // empty land next to us? 0 or 1
-    Math.min(1, enemies.size / 6),                                         // how boxed-in we are
-    weakest ? Math.min(1, troops / Math.max(1, weakest.troops()) / 2) : 1, // troops vs weakest nbr (0.5 = even)
-  ];
-  return { labels, values };
-}
-
-// SPATIAL OBSERVATION: the whole map as a stack of binary grids ("channels"),
-// shape [C, H, W] - exactly what a CNN reads. Now covers everything Nations bring:
-// terrain (water), alliances, nuke fallout, and structures. On the all-land plains
-// map vs tribes, several channels stay all-zero until we face Nations on a real map.
-const STRUCT_TYPES = new Set<UnitType>([
-  UnitType.City, UnitType.Port, UnitType.Factory,
-  UnitType.MissileSilo, UnitType.DefensePost, UnitType.SAMLauncher,
-]);
-function observeSpatial() {
-  const W = game.width(), H = game.height();
-  const mk = () => new Uint8Array(W * H);
-  const mine = mk(), hostile = mk(), allied = mk(), neutral = mk();
-  const blocked = mk(), fallout = mk(), myStruct = mk(), enemyStruct = mk();
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const t = game.ref(x, y), i = y * W + x;
-    if (!game.isLand(t) || game.isImpassable(t)) { blocked[i] = 1; continue; } // terrain / water
-    if (game.hasFallout(t)) fallout[i] = 1;                                     // nuke damage
-    if (!game.hasOwner(t)) { neutral[i] = 1; continue; }
-    const sid = game.ownerID(t);
-    if (sid === me.smallID()) mine[i] = 1;
-    else {
-      const o = game.playerBySmallID(sid);
-      if (o.isPlayer() && me.isFriendly(o)) allied[i] = 1; else hostile[i] = 1;  // alliances
-    }
-  }
-  for (const u of game.units()) {                                               // structures
-    if (!u.isActive() || !STRUCT_TYPES.has(u.type())) continue;
-    const i = game.y(u.tile()) * W + game.x(u.tile());
-    if (u.owner().smallID() === me.smallID()) myStruct[i] = 1; else enemyStruct[i] = 1;
-  }
-  const channels = ["mine", "hostile", "allied", "neutral", "blocked", "fallout", "myStruct", "enemyStruct"];
-  const data = [mine, hostile, allied, neutral, blocked, fallout, myStruct, enemyStruct];
-  return { channels, data };
-}
-
-// shrunk ASCII view (priority): M/E = my/enemy structure, # = us, + = ally, O = enemy,
-// * = fallout, . = empty land, ~ = water. Also prints how many 1s are in each channel.
-function printSpatial(cols = 40): void {
-  const sp = observeSpatial();
-  const W = game.width(), H = game.height();
-  const [mine, hostile, allied, neutral, blocked, fallout, myStruct, enemyStruct] = sp.data;
-  const step = Math.max(1, Math.ceil(W / cols));
-  for (let y = 0; y < H; y += step) {
-    let row = "";
-    for (let x = 0; x < W; x += step) {
-      const i = y * W + x;
-      row += myStruct[i] ? "M" : enemyStruct[i] ? "E" : mine[i] ? "#" : allied[i] ? "+"
-        : hostile[i] ? "O" : fallout[i] ? "*" : neutral[i] ? "." : blocked[i] ? "~" : " ";
-    }
-    console.log("   " + row);
-  }
-  console.log("   channel sums: " + sp.channels.map((c, k) => `${c}=${sp.data[k].reduce((a, v) => a + v, 0)}`).join("  "));
-}
-
-// --- (4) the control loop: LOOK, DECIDE, ACT (and now, print the OBSERVATION) ---
-const me = game.player(AGENT_ID);
-console.log(`Agent spawned at tile (${game.x(spawnTile)}, ${game.y(spawnTile)})`);
-let tick = 0;
-for (; tick < 4000; tick++) {
-  // DECIDE + ACT: every DECISION_EVERY ticks.
-  if (me.isAlive() && tick % DECISION_EVERY === 0 && me.troops() > 1) {
-    // OBSERVE the border: is there empty land next to us, and which enemies do we touch?
-    let emptyLandAdjacent = false;
-    const enemies = new Set<Player>();
-    for (const t of me.borderTiles()) {
-      game.forEachNeighbor(t, (n) => {
-        if (!game.isLand(n) || game.isImpassable(n)) return;
-        if (game.ownerID(n) === me.smallID()) return;
-        if (!game.hasOwner(n)) { emptyLandAdjacent = true; return; }
-        const o = game.playerBySmallID(game.ownerID(n));
-        if (o.isPlayer() && !me.isFriendly(o)) enemies.add(o);
-      });
-    }
-    // DECIDE: grow into empty land if we can; otherwise attack the weakest neighbor,
-    // but ONLY if we clearly outnumber them (attacking is expensive — don't bleed the army).
-    if (emptyLandAdjacent) {
-      game.addExecution(new AttackExecution(me.troops() / 2, me, game.terraNullius().id()));
-    } else if (enemies.size > 0) {
+    if (emptyLandAdjacent) game.addExecution(new AttackExecution(me.troops() / 2, me, game.terraNullius().id()));
+    else if (enemies.size > 0) {
       const weakest = [...enemies].sort((a, b) => a.troops() - b.troops())[0];
-      if (me.troops() > weakest.troops() * 2) {
-        game.addExecution(new AttackExecution(me.troops() / 3, me, weakest.id()));
-      }
+      if (me.troops() > weakest.troops() * 2) game.addExecution(new AttackExecution(me.troops() / 3, me, weakest.id()));
     }
   }
   game.executeNextTick();
   if (tick % FRAME_EVERY === 0) snapshot();
-  if (tick % 500 === 0) {
-    console.log(`tick ${tick} | alive=${me.isAlive()} tiles=${me.numTilesOwned()} troops=${Math.floor(me.troops())} gold=${me.gold()}`);
-    if (me.isAlive()) {
-      const obs = observe();
-      console.log("   observation: " + obs.labels.map((l, i) => `${l}=${obs.values[i].toFixed(2)}`).join("  "));
-      if (tick === 500) { console.log("   spatial map (M/E=structures #=us +=ally O=enemy *=fallout .=empty ~=water):"); printSpatial(); }
+  if (tick % 1000 === 0) {
+    const nat = game.players().filter(p => p.type() === PlayerType.Nation && p.isAlive()).length;
+    const structs = game.units().filter(u => u.isActive() && STR.has(u.type())).length;
+    console.log(`tick ${tick} | agent alive=${me.isAlive()} tiles=${me.numTilesOwned()} | nations alive=${nat} structures=${structs}`);
+    if (me.isAlive() && tick === 1000) {
+      const o = observe(); console.log("   scalar: " + o.labels.map((l,i)=>`${l}=${o.values[i].toFixed(2)}`).join("  "));
+      const sp = observeSpatial();
+      console.log("   channel sums: " + sp.channels.map((c,k)=>`${c}=${sp.data[k].reduce((a,v)=>a+v,0)}`).join("  "));
     }
   }
-  if (!me.isAlive() && tick > 50) { console.log(`Agent died at tick ${tick}.`); break; }
+  const aliveP = game.players().filter(p => p.isPlayer() && p.isAlive());
+  if (aliveP.length <= 1) break;
 }
 snapshot();
-
-// --- write the replay ---
-const outDir = path.join(dir, "../../viz");
-fs.mkdirSync(outDir, { recursive: true });
-const payload = {
-  W, H, interval: FRAME_EVERY, winner: "(agent demo)",
-  terrain: Buffer.from(terrain).toString("base64"), legend, frameTicks, deltas,
-};
+const outDir = path.join(dir, "../../viz"); fs.mkdirSync(outDir, { recursive: true });
+const payload = { W: RW, H: RH, interval: FRAME_EVERY, winner: "(world demo)", terrain: Buffer.from(terrain).toString("base64"), legend, frameTicks, deltas };
 fs.writeFileSync(path.join(outDir, "replay.js"), "window.REPLAY = " + JSON.stringify(payload) + ";");
-console.log(`Wrote viz/replay.js (${deltas.length} frames). AGENT is the WHITE territory. Open viz/index.html.`);
+console.log(`agent ${me.isAlive() ? "survived to tick " + tick : "died"} | wrote viz/replay.js (${deltas.length} frames, ${(fs.statSync(path.join(outDir,"replay.js")).size/1e6).toFixed(2)} MB, pooled ${RW}x${RH})`);
