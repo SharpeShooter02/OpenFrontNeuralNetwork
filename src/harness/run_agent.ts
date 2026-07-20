@@ -21,22 +21,32 @@ const _warn = console.warn.bind(console);
 console.warn = (...a: any[]) => { if (typeof a[0] === "string" && a[0].startsWith("cannot build")) return; _warn(...a); };
 
 const gameID = "agent_world";
-const NUM_NATIONS = 10, BOTS = 50;                 // tribe-heavy (5:1)
+const NUM_NATIONS = +(process.env.NUM_NATIONS ?? 15), BOTS = +(process.env.BOTS ?? 100);  // density-matched, mirrors env_server
 const FRAME_EVERY = 30, DECISION_EVERY = 20, MAX_TICKS = 12000, MAX_GAME_MS = 60000;
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const md = path.join(dir, "../../vendor/OpenFrontIO/tests/testdata/maps/world");
 const man = JSON.parse(fs.readFileSync(path.join(md, "manifest.json"), "utf8"));
-const gameMap = await genTerrainFromBin(man.map, fs.readFileSync(path.join(md, "map.bin")));
-const mini = await genTerrainFromBin(man.map4x, fs.readFileSync(path.join(md, "map4x.bin")));
+const gameMap = await genTerrainFromBin(man.map4x, fs.readFileSync(path.join(md, "map4x.bin")));
+const mini = await genTerrainFromBin(man.map16x, fs.readFileSync(path.join(md, "map16x.bin")));
 
 const cfg: any = { gameMap: GameMapType.World, gameMapSize: GameMapSize.Normal, gameMode: GameMode.FFA,
   gameType: GameType.Singleplayer, difficulty: Difficulty.Medium, nations: "default",
   donateGold: false, donateTroops: false, bots: BOTS, infiniteGold: false, infiniteTroops: false, instantBuild: false, randomSpawn: false };
 const config = new Config(cfg, null as any, false);
 const W = gameMap.width(), H = gameMap.height();
-let seed = 777; const rnd = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 0xffffffff;
+// Real world-manifest nations scaled to map4x and snapped to land (mirrors env_server).
+const scaleX = W / man.map.width, scaleY = H / man.map.height;
+const snapLand = (x: number, y: number) => {
+  for (let r = 0; r < 20; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+    if (gameMap.isLand(gameMap.ref(xx, yy))) return [xx, yy]; }
+  return [Math.max(0, Math.min(W - 1, x)), Math.max(0, Math.min(H - 1, y))]; };
+const manNats: any[] = man.nations.filter((n: any) => n.coordinates);
+const stride = NUM_NATIONS >= manNats.length ? 1 : Math.ceil(manNats.length / NUM_NATIONS);
+const chosen = manNats.filter((_, i) => i % stride === 0).slice(0, NUM_NATIONS);
 const nations: Nation[] = [];
-for (let i = 0; i < NUM_NATIONS; i++) { let x, y, t; do { x = Math.floor(rnd()*W); y = Math.floor(rnd()*H); t = gameMap.ref(x,y); } while (!gameMap.isLand(t)); nations.push(new Nation(new Cell(x,y), new PlayerInfo("Nat"+i, PlayerType.Nation, null, "nat"+i))); }
+for (const mn of chosen) { const [x, y] = snapLand(Math.floor(mn.coordinates[0] * scaleX), Math.floor(mn.coordinates[1] * scaleY));
+  nations.push(new Nation(new Cell(x, y), new PlayerInfo(mn.name, PlayerType.Nation, null, "nat" + nations.length))); }
 
 const game = createGame([], nations, gameMap, mini, config);
 const AGENT_ID = "agent";
@@ -57,8 +67,12 @@ const me = game.player(AGENT_ID);
 const OPPONENTS = NUM_NATIONS + BOTS;
 
 const policy = new Policy(12, 16, 12);
-const wPath = path.join(dir, "../../data/best_weights.json");
-if (fs.existsSync(wPath)) { try { setFlat(policy, JSON.parse(fs.readFileSync(wPath, "utf8"))); console.log("loaded trained weights"); } catch { console.log("weights unreadable; random"); } }
+let smpS = 12345; const smpl = () => (smpS = (Math.imul(smpS, 1103515245) + 12345) >>> 0) / 0xffffffff;  // seeded sampler for action choice
+// Prefer the torch-trained weights (exported by train_torch/export_weights.py), else the ES weights.
+const torchPath = path.join(dir, "../../data/torch_weights.json");
+const esPath = path.join(dir, "../../data/best_weights.json");
+const wPath = fs.existsSync(torchPath) ? torchPath : esPath;
+if (fs.existsSync(wPath)) { try { setFlat(policy, JSON.parse(fs.readFileSync(wPath, "utf8"))); console.log(`loaded weights: ${path.basename(wPath)}`); } catch { console.log("weights unreadable; random"); } }
 else console.log("no trained weights; random policy");
 
 const DS = Math.max(1, Math.ceil(Math.max(W, H) / 240));
@@ -115,17 +129,22 @@ for (; tick < MAX_TICKS; tick++) {
       Math.min(1, me.allies().length/5), me.incomingAllianceRequests().length>0?1:0,
       Math.min(1, me.unitCount(UnitType.City)/8), me.unitCount(UnitType.MissileSilo)>0?1:0, coastal];
     for (const req of me.incomingAllianceRequests()) req.accept();
-    const { action, troopFraction } = policy.forward(obs);
+    // Sample from the action distribution (as during training) rather than argmax, so the
+    // recorded game reflects the stochastic policy's actual behavior instead of collapsing to one move.
+    const { probs, troopFraction } = policy.forward(obs);
+    let r = smpl(), action = 0; for (let i = 0; i < probs.length; i++) { r -= probs[i]; if (r <= 0) { action = i; break; } }
     const commit = Math.floor(me.troops() * Math.max(0.01, Math.min(1, troopFraction)));
+    // Build on a currently-owned tile (the fixed spawn tile is often captured by mid-game).
+    const ownedTile = () => { if (game.ownerID(spawnTile) === me.smallID()) return spawnTile; for (const t of me.tiles()) return t; return spawnTile; };
     const build = (u: UnitType, tile: number) => { const bt = me.canBuild(u, tile); if (bt) game.addExecution(new ConstructionExecution(me, u, bt)); };
     if (action === 0 && empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
     else if (action === 1 && weakest) game.addExecution(new AttackExecution(commit, me, weakest.id()));
     else if (action === 2 && strongest) game.addExecution(new AttackExecution(commit, me, strongest.id()));
     else if (action === 4) { for (const e of enemies) if (me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
-    else if (action === 5) build(UnitType.City, spawnTile);
-    else if (action === 6) build(UnitType.DefensePost, spawnTile);
-    else if (action === 7) build(UnitType.MissileSilo, spawnTile);
-    else if (action === 8) build(UnitType.SAMLauncher, spawnTile);
+    else if (action === 5) build(UnitType.City, ownedTile());
+    else if (action === 6) build(UnitType.DefensePost, ownedTile());
+    else if (action === 7) build(UnitType.MissileSilo, ownedTile());
+    else if (action === 8) build(UnitType.SAMLauncher, ownedTile());
     else if (action === 9 && strongest && me.unitCount(UnitType.MissileSilo) > 0) { let tgt: number | null = null; for (const t of strongest.tiles()) { tgt = t; break; } if (tgt !== null) game.addExecution(new NukeExecution(UnitType.AtomBomb, me, tgt)); }
     else if (action === 10) { const ge = game.players().filter(p=>p.isPlayer()&&p.isAlive()&&p.id()!==AGENT_ID&&!me.isFriendly(p)).sort((a,b)=>a.troops()-b.troops())[0];
       if (ge) { let dst = -1; for (const t of ge.tiles()) { if (game.isShore(t)) { dst = t; break; } } if (dst < 0) for (const t of ge.tiles()) { dst = t; break; }
