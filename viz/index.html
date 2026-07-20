@@ -72,6 +72,7 @@
   }
   const landTotal = terrain.reduce((a, v) => a + v, 0) || (W * H);
   const WATER = [11, 26, 46], NEUTRAL = [46, 52, 64];
+  const agentK = R.legend.findIndex((l) => l.name === "AGENT") + 1; // palette index of our agent (0 = not found)
 
   // layout
   document.body.insertAdjacentHTML("afterbegin",
@@ -79,6 +80,7 @@
     '<div id="side">' +
       '<h1>OpenFront Replay</h1>' +
       '<div class="muted" id="meta"></div>' +
+      '<div id="agentbar" style="display:flex;align-items:center;gap:8px;margin:10px 0;padding:8px 10px;border:1px solid #3a4556;border-radius:6px;background:#151b26;font-weight:600"></div>' +
       '<div id="controls"><button id="play">❚❚</button>' +
         '<input id="scrub" type="range" min="0" max="' + (nFrames-1) + '" value="0"></div>' +
       '<div class="row"><label>Speed</label><input id="speed" type="range" min="1" max="60" value="12"></div>' +
@@ -88,7 +90,7 @@
 
   const canvas = document.getElementById("map");
   const ctx = canvas.getContext("2d");
-  const SCALE = Math.max(1, Math.floor(560 / Math.max(W, H)));
+  const SCALE = Math.max(1, Math.floor(900 / Math.max(W, H)));
   canvas.width = W * SCALE; canvas.height = H * SCALE;
   ctx.imageSmoothingEnabled = false;
   const off = document.createElement("canvas"); off.width = W; off.height = H;
@@ -119,6 +121,15 @@
       '<div class="bar"><span class="chip" style="background:' + R.legend[k-1].color + '"></span>' +
       '<span class="name">' + R.legend[k-1].name + '</span>' +
       '<span class="pct">' + (100 * n / landTotal).toFixed(1) + '%</span></div>').join("") || '<div class="muted">no territory yet</div>';
+    // permanent AGENT readout (it's usually too small to appear in the top-12 board)
+    if (agentK > 0) {
+      const an = counts[agentK];
+      document.getElementById("agentbar").innerHTML =
+        '<span class="chip" style="background:#ffffff"></span><span class="name">AGENT</span>' +
+        '<span class="pct">' + (an > 0 ? an + " tiles · " + (100 * an / landTotal).toFixed(2) + "%" : "eliminated") + '</span>';
+    } else {
+      document.getElementById("agentbar").style.display = "none";
+    }
     document.getElementById("tickinfo").textContent = "tick " + (R.frameTicks[fi] ?? "?") + "  ·  frame " + (fi+1) + "/" + nFrames;
     document.getElementById("scrub").value = fi;
   }

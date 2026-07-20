@@ -11,11 +11,16 @@ import { Executor } from "../../vendor/OpenFrontIO/src/core/execution/ExecutionM
 import { WinCheckExecution } from "../../vendor/OpenFrontIO/src/core/execution/WinCheckExecution";
 import { SpawnExecution } from "../../vendor/OpenFrontIO/src/core/execution/SpawnExecution";
 import { AttackExecution } from "../../vendor/OpenFrontIO/src/core/execution/AttackExecution";
+import { Policy, ACTIONS } from "../agent/policy";
 import { PseudoRandom } from "../../vendor/OpenFrontIO/src/core/PseudoRandom";
 import {
   Cell, Difficulty, GameMapType, GameMapSize, GameMode, GameType,
   Nation, Player, PlayerInfo, PlayerType, UnitType,
 } from "../../vendor/OpenFrontIO/src/core/game/Game";
+
+// silence the engine's noisy "cannot build ..." warnings (Nations failing to place a structure)
+const _warn = console.warn.bind(console);
+console.warn = (...args: any[]) => { if (typeof args[0] === "string" && args[0].startsWith("cannot build")) return; _warn(...args); };
 
 const gameID = "agent_world";
 const FRAME_EVERY = 30, DECISION_EVERY = 20, BOTS = 20;
@@ -70,6 +75,7 @@ game.addExecution(new SpawnExecution(gameID, agentInfo, spawnTile));
 game.executeNextTick(); // let the agent spawn
 const me = game.player(AGENT_ID);
 const OPPONENTS = nations.length + BOTS;
+const policy = new Policy(7); // 7 scalar observations in, 3 actions out (random weights for now)
 
 // SCALAR OBSERVATION (7 normalized numbers)
 function observe(): { labels: string[]; values: number[] } {
@@ -156,11 +162,13 @@ for (; tick < 6000; tick++) {
       const o = game.playerBySmallID(game.ownerID(nb));
       if (o.isPlayer() && !me.isFriendly(o)) enemies.add(o);
     });
-    if (emptyLandAdjacent) game.addExecution(new AttackExecution(me.troops() / 2, me, game.terraNullius().id()));
-    else if (enemies.size > 0) {
-      const weakest = [...enemies].sort((a, b) => a.troops() - b.troops())[0];
-      if (me.troops() > weakest.troops() * 2) game.addExecution(new AttackExecution(me.troops() / 3, me, weakest.id()));
-    }
+    const weakest = [...enemies].sort((a, b) => a.troops() - b.troops())[0];
+    // THE POLICY NETWORK chooses the action from the observation (random weights -> plays badly)
+    const { action, probs } = policy.forward(observe().values);
+    if (action === 0 && emptyLandAdjacent) game.addExecution(new AttackExecution(me.troops() / 2, me, game.terraNullius().id()));
+    else if (action === 1 && weakest) game.addExecution(new AttackExecution(me.troops() / 3, me, weakest.id()));
+    // action 2 = wait (do nothing)
+    if (tick % 100 === 0) console.log(`   policy: probs=[${probs.map((p) => p.toFixed(2)).join(", ")}] -> ${ACTIONS[action]}`);
   }
   game.executeNextTick();
   if (tick % FRAME_EVERY === 0) snapshot();

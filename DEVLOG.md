@@ -119,6 +119,19 @@ vision channels light up (`blocked` = ocean = 1.35M tiles, `enemyStruct` = 12 bu
 Our hand-policy that *crushed* the tribes now **dies by ~tick 2000** against Nations — the
 concrete motivation for learning a policy instead of hand-tuning one.
 
+## Step 8 — The policy network (untrained)
+**Added:** `src/agent/policy.ts` — a tiny hand-written MLP (7 inputs → 8 hidden (tanh) →
+3 outputs → softmax). `run_agent.ts` now calls `policy.forward(observe().values)` to pick
+the action (`expand` / `attackWeakest` / `wait`) instead of the `if/else` chooser.
+
+**Why:** this is *the* seam a learned brain plugs into. The decision now flows
+`observation → network → probabilities → action`. With **random weights** it plays badly
+(favors "wait", dies fast) — which is exactly the point: it's bad only because the weights
+are random numbers we haven't trained yet. A "neural network" here is just multiply-add-bend
+repeated; you can read every number in `policy.ts`.
+**Next:** a reward signal (score a game), then a training loop (nudge the weights toward
+what won).
+
 ---
 
 ## Git workflow (how we commit going forward)
