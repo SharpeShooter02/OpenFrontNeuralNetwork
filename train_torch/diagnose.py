@@ -5,15 +5,15 @@ import subprocess, json, os
 import torch, torch.nn as nn
 from torch.distributions import Categorical
 
-N_OBS, N_ACT = 12, 12
-ACTIONS = ["expandEmpty","attackWeak","attackStrong","(unused3)","reqAlliance","buildCity",
+N_OBS, N_ACT, N_HID = 16, 12, 24
+ACTIONS = ["expandEmpty","attackWeak","attackStrong","acceptAlly","reqAllyUp","buildCity",
            "buildDefense","buildSilo","buildSAM","nuke","boatAttack","buildPort"]
 
 class PolicyNet(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(N_OBS, 16)
-        self.fc2 = nn.Linear(16, N_ACT + 1)
+        self.fc1 = nn.Linear(N_OBS, N_HID)
+        self.fc2 = nn.Linear(N_HID, N_ACT + 1)
         self.troop_log_std = nn.Parameter(torch.tensor(-0.5))
     def forward(self, x):
         h = torch.tanh(self.fc1(x)); out = self.fc2(h)
@@ -30,9 +30,9 @@ def choose(obs):
     return a, float(torch.sigmoid(troop_mean).item())
 
 def decode(o):
-    return (f"land={o[0]*100:5.2f}% troops={o[1]*200000:8.0f} gold={o[2]*200000:8.0f} "
-            f"enAlive={o[3]*60:2.0f} emptyAdj={int(o[4])} enNbr={o[5]*6:.0f} "
-            f"ratio={o[6]:.2f} allies={o[7]*5:.0f} cities={o[9]*8:.1f} silo={int(o[10])} coast={int(o[11])}")
+    return (f"land={o[0]*100:5.2f}% troops={o[1]*200000:8.0f} goldL={o[2]:.2f} "
+            f"enNbr={o[5]*6:.0f} wkRatio={o[6]:.2f} stRatio={o[12]:.2f} pressure={o[13]:.2f} "
+            f"allies={o[7]*5:.0f} allyBack={o[14]:.2f} offer={o[15]:.2f} cities={o[9]*8:.1f} silo={int(o[10])}")
 
 def tsx_cmd():
     if os.environ.get("TSX"): return os.environ["TSX"].split()

@@ -41,23 +41,31 @@ function scan() {
     });
   }
   const sorted = [...enemies].sort((a, b) => a.troops() - b.troops());
-  return { empty, coastal, shoreTile, enemies, weakest: sorted[0], strongest: sorted[sorted.length - 1] };
+  const sumTroops = sorted.reduce((a, p) => a + p.troops(), 0);
+  return { empty, coastal, shoreTile, enemies, weakest: sorted[0], strongest: sorted[sorted.length - 1], sumTroops };
 }
 
 function observe(): number[] {
-  if (!me.isAlive()) return new Array(12).fill(0);
+  if (!me.isAlive()) return new Array(16).fill(0);
   const s = scan();
+  const troops = Math.max(1, me.troops());
   const enemiesAlive = game.players().filter((p: any) => p.isPlayer() && p.isAlive() && p.id() !== "agent").length;
-  return [me.numTilesOwned()/land, Math.min(1,me.troops()/200000), Math.min(1,Number(me.gold())/200000),
+  const allyTroops = me.allies().reduce((a: number, p: any) => a + p.troops(), 0);
+  let offererTroops = 0; for (const r of me.incomingAllianceRequests()) offererTroops = Math.max(offererTroops, r.requestor().troops());
+  return [me.numTilesOwned()/land, Math.min(1,me.troops()/200000),
+    Math.log1p(Number(me.gold()))/Math.log1p(25_000_000),                            // gold: log-scaled (spans 0..25M MIRV)
     enemiesAlive/(NUM_NATIONS+BOTS), s.empty?1:0, Math.min(1,s.enemies.size/6),
     s.weakest?Math.min(1,me.troops()/Math.max(1,s.weakest.troops())/2):1,
     Math.min(1, me.allies().length/5), me.incomingAllianceRequests().length>0?1:0,
-    Math.min(1, me.unitCount(UnitType.City)/8), me.unitCount(UnitType.MissileSilo)>0?1:0, s.coastal];
+    Math.min(1, me.unitCount(UnitType.City)/8), me.unitCount(UnitType.MissileSilo)>0?1:0, s.coastal,
+    s.strongest?Math.min(1,me.troops()/Math.max(1,s.strongest.troops())/2):1,        // strongest-neighbor ratio
+    Math.min(1, s.sumTroops/troops/3),                                                // total border pressure (all neighbors)
+    Math.min(1, allyTroops/troops),                                                   // ally backing
+    offererTroops>0?Math.min(1, offererTroops/troops/2):0];                           // strength of strongest alliance offerer
 }
 
 function act(action: number, troopFraction: number) {
   const s = scan();
-  for (const req of me.incomingAllianceRequests()) req.accept();
   const commit = Math.floor(me.troops() * Math.max(0.01, Math.min(1, troopFraction)));
   // Build on a currently-owned tile (the fixed spawn tile is often captured by mid-game).
   const ownedTile = () => { if (game.ownerID(spawn) === me.smallID()) return spawn; for (const t of me.tiles()) return t; return spawn; };
@@ -65,7 +73,8 @@ function act(action: number, troopFraction: number) {
   if (action === 0 && s.empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
   else if (action === 1 && s.weakest) game.addExecution(new AttackExecution(commit, me, s.weakest.id()));
   else if (action === 2 && s.strongest) game.addExecution(new AttackExecution(commit, me, s.strongest.id()));
-  else if (action === 4) { for (const e of s.enemies) if (me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
+  else if (action === 3) { for (const req of me.incomingAllianceRequests()) req.accept(); }                    // accept incoming (now a learned choice)
+  else if (action === 4) { for (const e of s.enemies) if (e.troops() > me.troops() && me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }  // request only STRONGER (ally up, don't ally prey)
   else if (action === 5) build(UnitType.City, ownedTile());
   else if (action === 6) build(UnitType.DefensePost, ownedTile());
   else if (action === 7) build(UnitType.MissileSilo, ownedTile());

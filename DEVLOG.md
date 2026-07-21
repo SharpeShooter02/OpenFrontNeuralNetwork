@@ -353,3 +353,35 @@ reliably builds a city. **New bottleneck it exposed:** it grows to ~4,300 tiles 
 auto-accepting every offer + requesting alliances from *weaker* neighbors removes its own prey
 and invites backstabs. **Next:** make alliances a *learned* decision (accept/reject as an
 action + a relative-strength observation) so it can learn to ally *up*, not indiscriminately.
+
+## Step 21 — Relational senses + learned alliances + variance reduction
+**Why:** the agent could *see* only global summaries, so it couldn't reason about *who* to
+trust or how outnumbered it was — and alliances were hardcoded (auto-accept everything,
+request everyone), so there was nothing for the gradient to learn about diplomacy.
+
+**Observations 12 → 16** (each earns its seat by enabling a decision): strongest-neighbor troop
+ratio, **total border pressure** (Σ all neighbor troops ÷ mine — "how outnumbered am I"), ally
+backing (Σ ally troops ÷ mine), and **offerer strength** (strength of whoever's offering an
+alliance, so it can learn to ally *up*). Also **gold is now log-scaled** `ln(1+g)/ln(1+25M)`
+instead of `÷200K` — it was saturating at 1.0 by the first city, blind to the 125K→25M range
+that actually governs what you can afford.
+
+**Alliances as a learned decision:** removed the unconditional auto-accept; `acceptAlliance`
+is now its **own action** (the policy learns *when* to accept, conditioned on the offerer-
+strength obs), and `requestAlliance` only targets **stronger** players (forced "ally up" — a
+scalar net can't pick *which* player, same limitation as boat/attack targeting; only the accept
+side is truly learnable). Repurposed the dead `wait` slot, so action count stays 12.
+
+**Learner hygiene:** hidden layer **16 → 24**, **L2 weight decay** (1e-4) to shrink features
+that aren't pulling their weight, a **held-out validation** readout (3 unseen seeds) to catch
+overfitting, and a **32-seed cycled training pool** (each world seen ~30× over 1000 episodes)
+to cut spawn-luck variance while still generalizing. Repro: `EPISODES=1000 BATCH=10 POOL=32`.
+
+**Result:** best agent so far. Training reward climbs and sustains (ma20 ~+0.29 → +0.56 over
+the back half); **held-out val holds ~+0.2 while training rises — generalizing, not overfitting**.
+Peak territory **~2.7× larger** (≈4,300 → ≈11,750 tiles); economy (`buildCity`/`buildSilo`) and
+the new alliance actions are firmly in play. **Still open:** it grows big then gets ganged down
+and dies (~tick 2,800) — takes land but doesn't *hold*/compound it — and stays at **1 city**
+(`structureMinDist` leaves no room for a 2nd on fragmented land). **Next:** PPO (value-function
+critic) for the long build→grow→hold credit chain and spawn-luck discounting; and solving the
+building/placement limit (the "where" problem — spatial action head).

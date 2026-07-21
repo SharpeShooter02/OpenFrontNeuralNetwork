@@ -66,7 +66,7 @@ game.executeNextTick();
 const me = game.player(AGENT_ID);
 const OPPONENTS = NUM_NATIONS + BOTS;
 
-const policy = new Policy(12, 16, 12);
+const policy = new Policy(16, 24, 12);
 let smpS = 12345; const smpl = () => (smpS = (Math.imul(smpS, 1103515245) + 12345) >>> 0) / 0xffffffff;  // seeded sampler for action choice
 // Prefer the torch-trained weights (exported by train_torch/export_weights.py), else the ES weights.
 const torchPath = path.join(dir, "../../data/torch_weights.json");
@@ -123,12 +123,19 @@ for (; tick < MAX_TICKS; tick++) {
     }
     const sorted = [...enemies].sort((a, b) => a.troops() - b.troops());
     const weakest = sorted[0], strongest = sorted[sorted.length - 1];
-    const obs = [me.numTilesOwned()/game.numLandTiles(), Math.min(1,me.troops()/200000), Math.min(1,Number(me.gold())/200000),
+    const troopsN = Math.max(1, me.troops());
+    const allyTroops = me.allies().reduce((a: number, p: any) => a + p.troops(), 0);
+    const sumTroops = sorted.reduce((a, p) => a + p.troops(), 0);
+    let offererTroops = 0; for (const rq of me.incomingAllianceRequests()) offererTroops = Math.max(offererTroops, rq.requestor().troops());
+    const obs = [me.numTilesOwned()/game.numLandTiles(), Math.min(1,me.troops()/200000),
+      Math.log1p(Number(me.gold()))/Math.log1p(25_000_000),
       game.players().filter(p=>p.isPlayer()&&p.isAlive()&&p.id()!==AGENT_ID).length/OPPONENTS, empty?1:0,
       Math.min(1,enemies.size/6), weakest?Math.min(1,me.troops()/Math.max(1,weakest.troops())/2):1,
       Math.min(1, me.allies().length/5), me.incomingAllianceRequests().length>0?1:0,
-      Math.min(1, me.unitCount(UnitType.City)/8), me.unitCount(UnitType.MissileSilo)>0?1:0, coastal];
-    for (const req of me.incomingAllianceRequests()) req.accept();
+      Math.min(1, me.unitCount(UnitType.City)/8), me.unitCount(UnitType.MissileSilo)>0?1:0, coastal,
+      strongest?Math.min(1,me.troops()/Math.max(1,strongest.troops())/2):1,
+      Math.min(1, sumTroops/troopsN/3), Math.min(1, allyTroops/troopsN),
+      offererTroops>0?Math.min(1, offererTroops/troopsN/2):0];
     // Sample from the action distribution (as during training) rather than argmax, so the
     // recorded game reflects the stochastic policy's actual behavior instead of collapsing to one move.
     const { probs, troopFraction } = policy.forward(obs);
@@ -140,7 +147,8 @@ for (; tick < MAX_TICKS; tick++) {
     if (action === 0 && empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
     else if (action === 1 && weakest) game.addExecution(new AttackExecution(commit, me, weakest.id()));
     else if (action === 2 && strongest) game.addExecution(new AttackExecution(commit, me, strongest.id()));
-    else if (action === 4) { for (const e of enemies) if (me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
+    else if (action === 3) { for (const req of me.incomingAllianceRequests()) req.accept(); }
+    else if (action === 4) { for (const e of enemies) if (e.troops() > me.troops() && me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
     else if (action === 5) build(UnitType.City, ownedTile());
     else if (action === 6) build(UnitType.DefensePost, ownedTile());
     else if (action === 7) build(UnitType.MissileSilo, ownedTile());

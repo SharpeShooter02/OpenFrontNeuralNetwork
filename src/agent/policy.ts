@@ -2,7 +2,7 @@
 // so the agent learns not just *what* to do but *how much* of its army to commit.
 
 export const ACTIONS = [
-  "expand", "attackWeakest", "attackStrongest", "wait", "requestAlliance",
+  "expand", "attackWeakest", "attackStrongest", "acceptAlliance", "requestAllianceUp",
   "buildCity", "buildDefensePost", "buildMissileSilo", "buildSAMLauncher", "launchNuke",
   "boatAttack", "buildPort",
 ] as const;

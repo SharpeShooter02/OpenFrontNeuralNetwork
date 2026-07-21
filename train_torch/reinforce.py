@@ -9,19 +9,23 @@ import subprocess, json, os, sys
 import torch, torch.nn as nn
 from torch.distributions import Categorical, Normal
 
-N_OBS, N_ACT = 12, 12
+N_OBS, N_ACT, N_HID = 16, 12, 24
 GAMMA = 0.99
 LR = 3e-3
+WEIGHT_DECAY = 1e-4                            # light L2: shrinks features that aren't pulling their weight
 EPISODES = int(os.environ.get("EPISODES", "300"))
-BATCH = int(os.environ.get("BATCH", "10"))   # episodes pooled per gradient update
+BATCH = int(os.environ.get("BATCH", "10"))    # episodes pooled per gradient update
+POOL = int(os.environ.get("POOL", "32"))      # cycle a fixed pool of worlds: each seen many times
+TRAIN_SEEDS = [1000 + i for i in range(POOL)] # -> lower spawn-luck variance, still generalizes across the pool
+VAL_SEEDS = [90001, 90002, 90003]             # held-out seeds never trained on (overfitting check)
 MAX_STEPS = 2000
 SAVE_PATH = os.path.join("data", "torch_policy.pt")
 
 class PolicyNet(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(N_OBS, 16)
-        self.fc2 = nn.Linear(16, N_ACT + 1)     # 12 action logits + 1 troop-fraction mean (logit space)
+        self.fc1 = nn.Linear(N_OBS, N_HID)
+        self.fc2 = nn.Linear(N_HID, N_ACT + 1)  # 12 action logits + 1 troop-fraction mean (logit space)
         self.troop_log_std = nn.Parameter(torch.tensor(-0.5))  # learned exploration width for troop
     def forward(self, x):
         h = torch.tanh(self.fc1(x))
@@ -29,7 +33,7 @@ class PolicyNet(nn.Module):
         return out[..., :N_ACT], out[..., N_ACT]
 
 net = PolicyNet()
-opt = torch.optim.Adam(net.parameters(), lr=LR)
+opt = torch.optim.Adam(net.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
 def choose(obs):
     x = torch.tensor(obs, dtype=torch.float32)
@@ -60,10 +64,20 @@ def returns_to_go(rewards):
     out.reverse()
     return torch.tensor(out, dtype=torch.float32)
 
+def run_val():                                # play held-out seeds with no gradient; mean reward
+    tot = 0.0
+    for sd in VAL_SEEDS:
+        o = rpc({"cmd": "reset", "seed": sd})["obs"]; done, steps, rep = False, 0, 0.0
+        while not done and steps < MAX_STEPS:
+            with torch.no_grad(): a, tr, _ = choose(o)
+            r = rpc({"cmd": "step", "action": a, "troop": tr}); o = r["obs"]; done = r["done"]; rep += r["reward"]; steps += 1
+        tot += rep
+    return tot / len(VAL_SEEDS)
+
 recent = []
 batch_logps, batch_G = [], []          # pooled across BATCH episodes before each update
 for ep in range(EPISODES):
-    o = rpc({"cmd": "reset", "seed": ep})["obs"]
+    o = rpc({"cmd": "reset", "seed": TRAIN_SEEDS[ep % len(TRAIN_SEEDS)]})["obs"]
     logps, rewards = [], []
     done, steps, total = False, 0, 0.0
     while not done and steps < MAX_STEPS:
@@ -86,7 +100,9 @@ for ep in range(EPISODES):
         G = (G - G.mean()) / (G.std() + 1e-8)  # baseline ACROSS episodes -> good games get +adv, bad -adv
         loss = -(torch.stack(batch_logps) * G).mean()
         opt.zero_grad(); loss.backward(); opt.step()
-        print(f"  -- update @ ep {ep}: loss {loss.item():+.3f}, batch_steps {len(G)}")
+        val = run_val()
+        print(f"  -- update @ ep {ep}: loss {loss.item():+.3f}, batch_steps {len(G)}, VAL(held-out) {val:+.3f}")
+        sys.stdout.flush()
         batch_logps, batch_G = [], []
 
 torch.save(net.state_dict(), SAVE_PATH)
