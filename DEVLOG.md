@@ -327,3 +327,29 @@ pattern (no trust region / value baseline). Economy is now reachable *and* funct
 remaining problem is the learner, not the environment. **Next (part 4):** PPO with a
 value-function baseline for lower-variance, sustained learning; optionally light reward shaping
 toward economy.
+
+## Step 20 — Momentum reward (why it turtled and wouldn't build)
+**The diagnosis:** watching the trained agent, it would grow early then *stop* — no more
+cities, attacks, or boats — and cling to life behind indiscriminate alliances. The reward was
+the culprit, in two ways: (1) `5*(Δ land share)` **telescopes to `5*(final − initial)`**, so
+dying (final share = 0) **claws back every tile it ever gained** — growing big then dying nets
+~0; (2) the flat `+0.001/step` survival bonus sums to **+0.6 over the 600-step cap**, dwarfing
+the land term (shares ~0.01–0.05). Net effect: a 42-tile turtle that survives to the cap
+scored *higher* than a 2,500-tile empire that died. We were **paying the agent to be passive**,
+and building (125K gold, delayed/diffuse payoff, then clawed back) never got credited.
+
+**The fix (per-step reward v2):** reward **momentum**, not mere survival —
+`3*(Δ land share) + 0.2*(new city built)` per step, and at game end **bank the peak**:
+`+5*peakShare` (so growth counts even if it later dies), `+5` decisive win, `−0.15` death.
+Dropped the survival term entirely. Peak-banking makes aggression stop being suicidal; the
+per-city bonus bootstraps economy that the weak REINFORCE credit chain missed on its own.
+
+**Result:** reward climbs and **sustains** (ma20 −0.03 → +0.33 by ep 150, settling ~+0.2 —
+the first real, non-oscillating learning curve). Behavior flips: the action histogram is no
+longer flat — `attackWeak / attackStrong / buildCity` become the top actions, and the agent
+reliably builds a city. **New bottleneck it exposed:** it grows to ~4,300 tiles then gets
+**ganged down to a sliver** — it learns to *take* land but not *hold* it, and it can't place a
+2nd city (`structureMinDist` on a tiny territory). This is where alliance management bites:
+auto-accepting every offer + requesting alliances from *weaker* neighbors removes its own prey
+and invites backstabs. **Next:** make alliances a *learned* decision (accept/reject as an
+action + a relative-strength observation) so it can learn to ally *up*, not indiscriminately.

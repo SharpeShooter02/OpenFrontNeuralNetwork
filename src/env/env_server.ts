@@ -27,7 +27,7 @@ const md = path.join(dir, "../../vendor/OpenFrontIO/tests/testdata/maps/world");
 const man = JSON.parse(fs.readFileSync(path.join(md, "manifest.json"), "utf8"));
 const mapBuf = fs.readFileSync(path.join(md, "map4x.bin")), miniBuf = fs.readFileSync(path.join(md, "map16x.bin"));
 
-let game: any, me: any, land = 1, tick = 0, spawn = -1, prevShare = 0, W = 0, H = 0;
+let game: any, me: any, land = 1, tick = 0, spawn = -1, prevShare = 0, peakShare = 0, prevCities = 0, W = 0, H = 0;
 
 function scan() {
   let empty = false, coastal = 0, shoreTile = -1; const enemies = new Set<Player>();
@@ -111,18 +111,28 @@ async function reset(seed: number): Promise<number[]> {
   game.addExecution(new SpawnExecution("env_" + seed, info, spawn));
   game.executeNextTick();
   me = game.player("agent"); land = game.numLandTiles(); tick = 0; prevShare = me.isAlive() ? me.numTilesOwned()/land : 0;
+  peakShare = prevShare; prevCities = me.isAlive() ? me.unitCount(UnitType.City) : 0;
   return observe();
 }
 
 function step(action: number, troop: number) {
   if (me.isAlive() && me.troops() > 1) act(action, troop);
   for (let i = 0; i < DECIDE_EVERY; i++) { game.executeNextTick(); tick++; if (!me.isAlive() && tick > 50) break; }
-  const curShare = me.isAlive() ? me.numTilesOwned()/land : 0;
-  let reward = 5 * (curShare - prevShare) + (me.isAlive() ? 0.001 : 0);
-  prevShare = curShare;
+  const alive = me.isAlive();
+  const curShare = alive ? me.numTilesOwned()/land : 0;
+  const curCities = alive ? me.unitCount(UnitType.City) : prevCities;
+  // Momentum reward: dense expansion delta + a bootstrap bonus for each city built (economy).
+  // No flat survival term — that just paid the agent to turtle behind alliances.
+  let reward = 3 * (curShare - prevShare) + 0.2 * Math.max(0, curCities - prevCities);
+  prevShare = curShare; prevCities = curCities;
+  if (alive) peakShare = Math.max(peakShare, curShare);
   const aliveP = game.players().filter((p: any) => p.isPlayer() && p.isAlive()).length;
-  const done = !me.isAlive() || tick >= MAX_TICKS || aliveP <= 1;
-  if (done) { if (me.isAlive() && me.numTilesOwned() >= 0.8*land) reward += 5; if (!me.isAlive()) reward -= 0.3; }
+  const done = !alive || tick >= MAX_TICKS || aliveP <= 1;
+  if (done) {
+    reward += 5 * peakShare;                                  // BANK the peak: growth counts even if it later dies
+    if (alive && me.numTilesOwned() >= 0.8*land) reward += 5; // decisive win
+    if (!alive) reward -= 0.15;                               // modest death penalty (< peak bonus, so aggression pays)
+  }
   return { obs: observe(), reward, done };
 }
 
