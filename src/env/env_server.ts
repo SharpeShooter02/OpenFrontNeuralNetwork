@@ -75,7 +75,31 @@ function observe(): number[] {
     offererTroops>0?Math.min(1, offererTroops/troops/2):0];                           // strength of strongest alliance offerer
 }
 
-function act(action: number, troopFraction: number) {
+// --- Diplomacy candidate scoring: the policy picks WHICH player to accept/request/break, instead of
+// the old "accept all / request all" heuristics. candidates() returns up to KCAND rows of FCAND
+// features (row 0 = no-op); curCands holds the matching {player, kind, req} so step() can apply the
+// chosen target index. kind: offer->accept, enemy->request, ally->break.
+const KCAND = 6, FCAND = 7;
+let curCands: any[] = [{ kind: "noop" }];
+function candidates(): number[][] {
+  curCands = [{ kind: "noop" }];
+  const noop = [1, 0, 0, 0, 0, 0, 0];
+  if (!me.isAlive()) return [noop];
+  const myT = Math.max(1, me.troops());
+  const feat = (p: any, kind: string) => [0, Math.min(1, p.troops()/myT/2), kind === "ally" ? 1 : 0,
+    kind === "offer" ? 1 : 0, kind === "enemy" ? 1 : 0, Math.min(1, p.allies().length/5), Math.min(1, p.numTilesOwned()/land)];
+  const rows: number[][] = [noop];
+  const seen = new Set<number>();
+  const add = (p: any, kind: string, req?: any) => {
+    if (curCands.length >= KCAND || !p || !p.isAlive() || seen.has(p.smallID())) return;
+    seen.add(p.smallID()); curCands.push({ player: p, kind, req }); rows.push(feat(p, kind)); };
+  for (const r of me.incomingAllianceRequests()) add(r.requestor(), "offer", r);   // accept candidates
+  for (const a of me.allies()) add(a, "ally");                                      // break candidates
+  for (const e of [...scan().enemies].sort((x: any, y: any) => y.troops() - x.troops())) if (me.canSendAllianceRequest(e)) add(e, "enemy");  // request candidates
+  return rows;
+}
+
+function act(action: number, troopFraction: number, target: number) {
   const s = scan();
   const commit = Math.floor(me.troops() * Math.max(0.01, Math.min(1, troopFraction)));
   // Build on a currently-owned tile (the fixed spawn tile is often captured by mid-game).
@@ -97,8 +121,13 @@ function act(action: number, troopFraction: number) {
   if (action === 0 && s.empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
   else if (action === 1 && s.weakest) game.addExecution(new AttackExecution(commit, me, s.weakest.id()));
   else if (action === 2 && s.strongest) game.addExecution(new AttackExecution(commit, me, s.strongest.id()));
-  else if (action === 3) { for (const req of me.incomingAllianceRequests()) req.accept(); }                    // accept incoming (now a learned choice)
-  else if (action === 4) { for (const e of s.enemies) if (e.troops() > me.troops() && me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }  // request only STRONGER (ally up, don't ally prey)
+  else if (action === 3 && target > 0 && target < curCands.length) {   // diplomacy: act on the SCORED player
+    const c = curCands[target];
+    if (c.kind === "offer") { try { c.req.accept(); } catch {} }
+    else if (c.kind === "enemy") { if (c.player.isAlive() && me.canSendAllianceRequest(c.player)) me.createAllianceRequest(c.player); }
+    else if (c.kind === "ally") { for (const a of me.alliances()) if (a.other(me) === c.player) { me.breakAlliance(a); break; } }
+  }
+  // action 4 = wait / no-op (do nothing this decision)
   else if (action === 5) build(UnitType.City, buildTile());
   else if (action === 6) build(UnitType.DefensePost, buildTile());
   else if (action === 7) build(UnitType.MissileSilo, buildTile());
@@ -156,8 +185,8 @@ async function reset(seed: number): Promise<number[]> {
   return observe();
 }
 
-function step(action: number, troop: number) {
-  if (me.isAlive() && me.troops() > 1) act(action, troop);
+function step(action: number, troop: number, target: number) {
+  if (me.isAlive() && me.troops() > 1) act(action, troop, target);
   for (let i = 0; i < DECIDE_EVERY; i++) { game.executeNextTick(); tick++; if (!me.isAlive() && tick > 50) break; }
   const alive = me.isAlive();
   const curShare = alive ? me.numTilesOwned()/land : 0;
@@ -177,7 +206,7 @@ function step(action: number, troop: number) {
     if (alive && me.numTilesOwned() >= 0.8*land) reward += 10; // winning is the biggest payoff by far
     if (!alive) reward -= 0.15;                                // modest death penalty (< peak bonus, so aggression pays)
   }
-  return { obs: observe(), reward, done };
+  return { obs: observe(), cands: candidates(), reward, done };
 }
 
 const rl = readline.createInterface({ input: process.stdin });
@@ -185,8 +214,8 @@ rl.on("line", async (line) => {
   if (!line.trim()) return;
   const cmd = JSON.parse(line);
   let resp: any;
-  if (cmd.cmd === "reset") resp = { obs: await reset(cmd.seed ?? 0), reward: 0, done: false };
-  else if (cmd.cmd === "step") resp = step(cmd.action, cmd.troop);
+  if (cmd.cmd === "reset") resp = { obs: await reset(cmd.seed ?? 0), cands: candidates(), reward: 0, done: false };
+  else if (cmd.cmd === "step") resp = step(cmd.action, cmd.troop, cmd.target ?? 0);
   else resp = { error: "unknown cmd" };
   process.stdout.write(JSON.stringify(resp) + "\n");
 });

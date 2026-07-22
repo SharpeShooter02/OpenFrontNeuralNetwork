@@ -440,3 +440,29 @@ Economy is finally a *means* to territory, not a turtle. `run_agent.ts` gained `
 switched to **greedy** action selection (the strong policy plays best deterministically; the JS
 sampler didn't match torch). **Next:** learned alliance management (break-alliance action + relational
 obs) and the spatial "where" upgrades remain the open architectural frontiers.
+
+## Step 23c — Realistic density + Step 24 — Learned diplomacy (candidate scoring)
+**Density (23c):** the sparse Box let the agent "win" by outlasting ~21 opponents (`aliveP<=1`)
+without taking 80% — a bad habit. Made nation counts unbounded (fabricate beyond the map's 13) and
+set box default to **60 nations + 400 tribes (~460 players)**. Now it can't cheese it (forced-optimal
+peak ~5%); games end by elimination in the crowd. The trained agent builds economy under pressure
+(15–36% empires with cities/factories then overwhelmed), dies most games, and learned **measured
+troop commitment** (0.55→0.22) — transferable skill.
+
+**Diplomacy via candidate scoring (24) — the first move past the scalar MLP.** The MLP picks an
+action *type* but never *which* player. Fix (Tier A, candidate scoring): the env emits up to 6
+**candidate players** each step (offerers→accept, allies→break, bordering enemies→request) with 7
+relational features; the policy got a **candidate-scoring head** (`7→16→1`, softmax→sampled target),
+and PPO includes the target log-prob in the ratio **only on diplomacy steps** (conditional sub-action).
+**Break-alliance is now a real learnable action** (`me.breakAlliance`). The old accept-all/request-all
+heuristics collapsed into one learned `diplomacy` action + a `wait`.
+
+**Result — machinery works, but the agent barely uses it.** Verified the mechanism fires
+(accept/request/break all reachable), but the trained policy picks diplomacy only 0–3×/game (mostly
+requests). **Why:** we made the reward territory-ONLY with no survival term (to kill turtling) — but an
+alliance's payoff *is* survival/protection, which now has no reward hook, so PPO down-weights diplomacy
+to ~zero (plus a chicken-and-egg: rare diplomacy → untrained candidate head → stays unrewarding). Same
+recurring lesson: PPO uses what the reward rewards. The capability is built; making it *matter* needs
+alliances to pay off — longer games (Box `map4x`) where protection buys time to expand, and/or a mild
+survival/coordination incentive. `diagnose.py` now reports accept/request/break counts; `run_agent.ts`
+uses a heuristic for the diplomacy action (no candidate head in the TS viewer yet).

@@ -173,8 +173,9 @@ for (; tick < MAX_TICKS; tick++) {
     if (action === 0 && empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
     else if (action === 1 && weakest) game.addExecution(new AttackExecution(commit, me, weakest.id()));
     else if (action === 2 && strongest) game.addExecution(new AttackExecution(commit, me, strongest.id()));
-    else if (action === 3) { for (const req of me.incomingAllianceRequests()) req.accept(); }
-    else if (action === 4) { for (const e of enemies) if (e.troops() > me.troops() && me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
+    else if (action === 3) { for (const req of me.incomingAllianceRequests()) req.accept();   // heuristic diplomacy (viz has no candidate head)
+      for (const e of enemies) if (e.troops() > me.troops() && me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
+    // action 4 = wait / no-op
     else if (action === 5) build(UnitType.City, buildTile());
     else if (action === 6) build(UnitType.DefensePost, buildTile());
     else if (action === 7) build(UnitType.MissileSilo, buildTile());
