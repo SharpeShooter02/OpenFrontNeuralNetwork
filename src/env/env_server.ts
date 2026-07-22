@@ -69,16 +69,29 @@ function act(action: number, troopFraction: number) {
   const commit = Math.floor(me.troops() * Math.max(0.01, Math.min(1, troopFraction)));
   // Build on a currently-owned tile (the fixed spawn tile is often captured by mid-game).
   const ownedTile = () => { if (game.ownerID(spawn) === me.smallID()) return spawn; for (const t of me.tiles()) return t; return spawn; };
+  // Spread structures out: hand canBuild an owned tile FAR from existing structures, so structureMinDist
+  // doesn't reject it — otherwise every build stacks at one spot and only the 1st city ever places.
+  const buildTile = () => {
+    const structs = me.units([UnitType.City, UnitType.DefensePost, UnitType.MissileSilo, UnitType.SAMLauncher, UnitType.Port]);
+    if (structs.length === 0) return ownedTile();
+    const sx = structs.map((u: any) => game.x(u.tile())), sy = structs.map((u: any) => game.y(u.tile()));
+    let best = -1, bestD = -1, n = 0;
+    for (const t of me.tiles()) { if ((n++ & 3) !== 0) continue; if (n > 2000) break;
+      const tx = game.x(t), ty = game.y(t); let md = Infinity;
+      for (let i = 0; i < sx.length; i++) { const dx = tx - sx[i], dy = ty - sy[i], d = dx*dx + dy*dy; if (d < md) md = d; }
+      if (md > bestD) { bestD = md; best = t; } }
+    return best >= 0 ? best : ownedTile();
+  };
   const build = (u: UnitType, tile: number) => { const bt = me.canBuild(u, tile); if (bt) game.addExecution(new ConstructionExecution(me, u, bt)); };
   if (action === 0 && s.empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
   else if (action === 1 && s.weakest) game.addExecution(new AttackExecution(commit, me, s.weakest.id()));
   else if (action === 2 && s.strongest) game.addExecution(new AttackExecution(commit, me, s.strongest.id()));
   else if (action === 3) { for (const req of me.incomingAllianceRequests()) req.accept(); }                    // accept incoming (now a learned choice)
   else if (action === 4) { for (const e of s.enemies) if (e.troops() > me.troops() && me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }  // request only STRONGER (ally up, don't ally prey)
-  else if (action === 5) build(UnitType.City, ownedTile());
-  else if (action === 6) build(UnitType.DefensePost, ownedTile());
-  else if (action === 7) build(UnitType.MissileSilo, ownedTile());
-  else if (action === 8) build(UnitType.SAMLauncher, ownedTile());
+  else if (action === 5) build(UnitType.City, buildTile());
+  else if (action === 6) build(UnitType.DefensePost, buildTile());
+  else if (action === 7) build(UnitType.MissileSilo, buildTile());
+  else if (action === 8) build(UnitType.SAMLauncher, buildTile());
   else if (action === 9 && s.strongest && me.unitCount(UnitType.MissileSilo) > 0) { let tgt: number | null = null; for (const t of s.strongest.tiles()) { tgt = t; break; } if (tgt !== null) game.addExecution(new NukeExecution(UnitType.AtomBomb, me, tgt)); }
   else if (action === 10) { const ge = game.players().filter((p: any)=>p.isPlayer()&&p.isAlive()&&p.id()!=="agent"&&!me.isFriendly(p)).sort((a: any,b: any)=>a.troops()-b.troops())[0];
     if (ge) { let dst = -1; for (const t of ge.tiles()) { if (game.isShore(t)) { dst = t; break; } } if (dst < 0) for (const t of ge.tiles()) { dst = t; break; }

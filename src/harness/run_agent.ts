@@ -20,7 +20,9 @@ import { computeReward } from "../agent/reward";
 const _warn = console.warn.bind(console);
 console.warn = (...a: any[]) => { if (typeof a[0] === "string" && a[0].startsWith("cannot build")) return; _warn(...a); };
 
-const gameID = "agent_world";
+const SEED = +(process.env.SEED ?? 777);          // e.g. SEED=90001 to watch held-out validation world #1
+const gameID = "env_" + SEED;                     // mirror env_server's reset exactly (tribe placement + spawn)
+let rs = SEED >>> 0; const rand = () => (rs = (Math.imul(rs, 1103515245) + 12345) >>> 0) / 0xffffffff;
 const NUM_NATIONS = +(process.env.NUM_NATIONS ?? 15), BOTS = +(process.env.BOTS ?? 100);  // density-matched, mirrors env_server
 const FRAME_EVERY = 30, DECISION_EVERY = 20, MAX_TICKS = 12000, MAX_GAME_MS = 60000;
 const dir = path.dirname(fileURLToPath(import.meta.url));
@@ -58,9 +60,10 @@ game.addExecution(new WinCheckExecution());
 for (let sp = 0; sp < 150; sp++) game.executeNextTick();
 game.endSpawnPhase();
 game.addPlayer(agentInfo);
+const tx = Math.floor(rand()*W), ty = Math.floor(rand()*H);   // seed-varied spawn point (matches env_server)
 let spawnTile = -1, bd = Infinity;
 for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) { const t = game.ref(x, y);
-  if (game.isLand(t) && !game.isImpassable(t) && !game.hasOwner(t)) { const d = (x-W/2)*(x-W/2)+(y-H/2)*(y-H/2); if (d < bd) { bd = d; spawnTile = t; } } }
+  if (game.isLand(t) && !game.isImpassable(t) && !game.hasOwner(t)) { const d = (x-tx)*(x-tx)+(y-ty)*(y-ty); if (d < bd) { bd = d; spawnTile = t; } } }
 game.addExecution(new SpawnExecution(gameID, agentInfo, spawnTile));
 game.executeNextTick();
 const me = game.player(AGENT_ID);
@@ -106,7 +109,7 @@ function snapshot() {
   allyFrames.push(me.allies().map((a:any)=>idToIdx.get(a.smallID())).filter((k:any)=>k!==undefined));
 }
 
-console.log(`WORLD ${W}x${H} | ${NUM_NATIONS} nations + ${BOTS} tribes`);
+console.log(`WORLD ${W}x${H} | seed ${SEED} | ${NUM_NATIONS} nations + ${BOTS} tribes`);
 const startMs = performance.now();
 let tick = 0, peakTiles = 0, lastAlive = 0;
 for (; tick < MAX_TICKS; tick++) {
@@ -143,16 +146,28 @@ for (; tick < MAX_TICKS; tick++) {
     const commit = Math.floor(me.troops() * Math.max(0.01, Math.min(1, troopFraction)));
     // Build on a currently-owned tile (the fixed spawn tile is often captured by mid-game).
     const ownedTile = () => { if (game.ownerID(spawnTile) === me.smallID()) return spawnTile; for (const t of me.tiles()) return t; return spawnTile; };
+    // Spread structures out (far from existing ones) so structureMinDist doesn't reject the next build.
+    const buildTile = () => {
+      const structs = me.units([UnitType.City, UnitType.DefensePost, UnitType.MissileSilo, UnitType.SAMLauncher, UnitType.Port]);
+      if (structs.length === 0) return ownedTile();
+      const sx = structs.map((u: any) => game.x(u.tile())), sy = structs.map((u: any) => game.y(u.tile()));
+      let best = -1, bestD = -1, n = 0;
+      for (const t of me.tiles()) { if ((n++ & 3) !== 0) continue; if (n > 2000) break;
+        const tx = game.x(t), ty = game.y(t); let md = Infinity;
+        for (let i = 0; i < sx.length; i++) { const dx = tx - sx[i], dy = ty - sy[i], d = dx*dx + dy*dy; if (d < md) md = d; }
+        if (md > bestD) { bestD = md; best = t; } }
+      return best >= 0 ? best : ownedTile();
+    };
     const build = (u: UnitType, tile: number) => { const bt = me.canBuild(u, tile); if (bt) game.addExecution(new ConstructionExecution(me, u, bt)); };
     if (action === 0 && empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
     else if (action === 1 && weakest) game.addExecution(new AttackExecution(commit, me, weakest.id()));
     else if (action === 2 && strongest) game.addExecution(new AttackExecution(commit, me, strongest.id()));
     else if (action === 3) { for (const req of me.incomingAllianceRequests()) req.accept(); }
     else if (action === 4) { for (const e of enemies) if (e.troops() > me.troops() && me.canSendAllianceRequest(e)) me.createAllianceRequest(e); }
-    else if (action === 5) build(UnitType.City, ownedTile());
-    else if (action === 6) build(UnitType.DefensePost, ownedTile());
-    else if (action === 7) build(UnitType.MissileSilo, ownedTile());
-    else if (action === 8) build(UnitType.SAMLauncher, ownedTile());
+    else if (action === 5) build(UnitType.City, buildTile());
+    else if (action === 6) build(UnitType.DefensePost, buildTile());
+    else if (action === 7) build(UnitType.MissileSilo, buildTile());
+    else if (action === 8) build(UnitType.SAMLauncher, buildTile());
     else if (action === 9 && strongest && me.unitCount(UnitType.MissileSilo) > 0) { let tgt: number | null = null; for (const t of strongest.tiles()) { tgt = t; break; } if (tgt !== null) game.addExecution(new NukeExecution(UnitType.AtomBomb, me, tgt)); }
     else if (action === 10) { const ge = game.players().filter(p=>p.isPlayer()&&p.isAlive()&&p.id()!==AGENT_ID&&!me.isFriendly(p)).sort((a,b)=>a.troops()-b.troops())[0];
       if (ge) { let dst = -1; for (const t of ge.tiles()) { if (game.isShore(t)) { dst = t; break; } } if (dst < 0) for (const t of ge.tiles()) { dst = t; break; }

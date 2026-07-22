@@ -45,10 +45,10 @@ def rpc(msg):
     return json.loads(proc.stdout.readline())
 
 for ep in range(3):
-    o = rpc({"cmd": "reset", "seed": 1000 + ep})["obs"]
+    o = rpc({"cmd": "reset", "seed": 90001 + ep})["obs"]   # held-out worlds (not in the training pool)
     hist = [0]*N_ACT; troops_used = []
     done, steps, total = False, 0, 0.0
-    print(f"\n===== EPISODE {ep} (seed {1000+ep}) =====")
+    print(f"\n===== EPISODE {ep} (held-out seed {90001+ep}) =====")
     print(f"  start: {decode(o)}")
     while not done and steps < 2000:
         a, tr = choose(o); hist[a] += 1; troops_used.append(tr)

@@ -385,3 +385,28 @@ and dies (~tick 2,800) — takes land but doesn't *hold*/compound it — and sta
 (`structureMinDist` leaves no room for a 2nd on fragmented land). **Next:** PPO (value-function
 critic) for the long build→grow→hold credit chain and spawn-luck discounting; and solving the
 building/placement limit (the "where" problem — spatial action head).
+
+## Step 22 — Building placement fix (the 1-city ceiling) + watch validation games
+**The ceiling:** the agent could afford many cities but stayed stuck at **one**, because the build
+helper always handed `canBuild` the *first* owned tile — right next to the existing structure — and
+`structureMinDist` rejects anything that close. Every build stacked on the same spot, so only the
+first city ever placed. This was a heuristic bug, not a gold or learner problem.
+
+**The fix:** `buildTile()` now scans a sample of owned tiles and returns the one **farthest from any
+existing structure** (max-min distance), spreading builds across the territory. `canBuild`'s local
+radius-15 search then finds a valid, well-spaced spot. Verified: forcing city-building now yields
+**up to 8 cities** as land grows (was hard-capped at 1). Applied to both `env_server.ts` and
+`run_agent.ts`. (Gotcha: `Player.units(...)` only reads the first 3 type args unless you pass an
+**array** — `units([City, DefensePost, …])` — else it silently misses structure types.)
+
+**Result:** retrained (same 1000-ep / 32-seed config); the multi-city economy **≈doubled reward**
+(train ma20 ~+0.56 → ~+1.1) and held-out val now spikes to **+5.2 / +2.3** — i.e. it *wins* some
+held-out worlds (the +5 bonus fires at ≥80% land). It builds 3–8 cities and survives longer. Still
+imperfect at holding on the hardest worlds, but a clear, large improvement.
+
+**Also — watch the *actual* validation games:** `run_agent.ts` previously played one fixed
+center-spawn world that was neither a training nor a validation seed. It now takes a `SEED` and
+replicates `env_server`'s exact reset (gameID `env_<seed>`, seed-varied spawn), so `SEED=90001
+npm run agent` plays held-out world #1 — you can *see* the games behind the val spikes. (World +
+policy match the env; the exact sampled moves differ since JS vs torch use different RNGs.) The
+diagnostic (`diagnose.py`) now also reports on held-out seeds (90001+), not training-pool worlds.
