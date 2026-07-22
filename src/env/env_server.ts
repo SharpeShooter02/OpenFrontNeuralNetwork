@@ -19,15 +19,26 @@ import { Cell, Difficulty, GameMapType, GameMapSize, GameMode, GameType, Nation,
 
 console.log = () => {}; console.warn = () => {}; console.debug = () => {}; // keep stdout clean for JSON
 
-// Density-matched to a real full-world game (~1 player / 1400 land tiles) on map4x's 157,860
-// land tiles: ~15 nations + ~100 tribes. Override via env for full-world (61/300) or tuning.
-const NUM_NATIONS = +(process.env.NUM_NATIONS ?? 15), BOTS = +(process.env.BOTS ?? 100), MAX_TICKS = 12000, DECIDE_EVERY = 20;
+// Training map. MAP=box (default): "The Box", a big all-land square (map16x = 512x512) — its size
+// gives players room to grow instead of instantly colliding, so games stay long and strategic (and
+// all-land = no water/nav overhead). MAP=world: the big world map4x. MAP=bigplains: tiny 200x200
+// (games consolidate too fast — kept for quick probes only). Override players via NUM_NATIONS/BOTS.
+const MAP = process.env.MAP ?? "box";
+const MAPS: any = {
+  world:     { rel: "tests/testdata/maps/world",      game: "map4x",  mini: "map16x", realNations: true },
+  bigplains: { rel: "tests/testdata/maps/big_plains", game: "map",    mini: "map4x",  realNations: false },
+  box:       { rel: "resources/maps/thebox",          game: "map16x", mini: "map16x", realNations: true },
+};
+const mc = MAPS[MAP];
+const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [6, 15] };  // sparse on the big box = room to grow, longer games
+const NUM_NATIONS = +(process.env.NUM_NATIONS ?? DEF[MAP][0]), BOTS = +(process.env.BOTS ?? DEF[MAP][1]), MAX_TICKS = 12000, DECIDE_EVERY = 20;
 const dir = path.dirname(fileURLToPath(import.meta.url));
-const md = path.join(dir, "../../vendor/OpenFrontIO/tests/testdata/maps/world");
+const md = path.join(dir, "../../vendor/OpenFrontIO/" + mc.rel);
 const man = JSON.parse(fs.readFileSync(path.join(md, "manifest.json"), "utf8"));
-const mapBuf = fs.readFileSync(path.join(md, "map4x.bin")), miniBuf = fs.readFileSync(path.join(md, "map16x.bin"));
+const mapBuf = fs.readFileSync(path.join(md, mc.game + ".bin")), miniBuf = fs.readFileSync(path.join(md, mc.mini + ".bin"));
 
-let game: any, me: any, land = 1, tick = 0, spawn = -1, prevShare = 0, peakShare = 0, prevCities = 0, W = 0, H = 0;
+let game: any, me: any, land = 1, tick = 0, spawn = -1, prevShare = 0, peakShare = 0, peakEcon = 0, W = 0, H = 0;
+const econCount = (p: any) => p.unitCount(UnitType.City) + p.unitCount(UnitType.Port) + p.unitCount(UnitType.Factory); // gold-economy structures
 
 function scan() {
   let empty = false, coastal = 0, shoreTile = -1; const enemies = new Set<Player>();
@@ -97,30 +108,37 @@ function act(action: number, troopFraction: number) {
     if (ge) { let dst = -1; for (const t of ge.tiles()) { if (game.isShore(t)) { dst = t; break; } } if (dst < 0) for (const t of ge.tiles()) { dst = t; break; }
       if (dst >= 0 && canBuildTransportShip(game, me, dst) !== false) game.addExecution(new TransportShipExecution(me, dst, commit)); } }
   else if (action === 11 && s.shoreTile >= 0) build(UnitType.Port, s.shoreTile);
+  else if (action === 12) build(UnitType.Factory, buildTile());
 }
 
 async function reset(seed: number): Promise<number[]> {
-  const gameMap = await genTerrainFromBin(man.map4x, mapBuf);
-  const mini = await genTerrainFromBin(man.map16x, miniBuf);
+  const gameMap = await genTerrainFromBin(man[mc.game], mapBuf);
+  const mini = await genTerrainFromBin(man[mc.mini], miniBuf);
   const cfg: any = { gameMap: GameMapType.World, gameMapSize: GameMapSize.Normal, gameMode: GameMode.FFA,
     gameType: GameType.Singleplayer, difficulty: Difficulty.Medium, nations: "default",
     donateGold:false, donateTroops:false, bots: BOTS, infiniteGold:false, infiniteTroops:false, instantBuild:false, randomSpawn:false };
   const config = new Config(cfg, null as any, false);
   let s = seed >>> 0; const rand = () => (s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 0xffffffff;
   W = gameMap.width(); H = gameMap.height();
-  // Real nations from the world manifest, scaled to map4x space and snapped to the nearest land.
-  const scaleX = W / man.map.width, scaleY = H / man.map.height;
-  const snapLand = (x: number, y: number) => {
-    for (let r = 0; r < 20; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
-      const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
-      if (gameMap.isLand(gameMap.ref(xx, yy))) return [xx, yy]; }
-    return [Math.max(0, Math.min(W - 1, x)), Math.max(0, Math.min(H - 1, y))]; };
-  const manNats: any[] = man.nations.filter((n: any) => n.coordinates);
-  const stride = NUM_NATIONS >= manNats.length ? 1 : Math.ceil(manNats.length / NUM_NATIONS);
-  const chosen = manNats.filter((_, i) => i % stride === 0).slice(0, NUM_NATIONS);
   const nations: Nation[] = [];
-  for (const mn of chosen) { const [x, y] = snapLand(Math.floor(mn.coordinates[0] * scaleX), Math.floor(mn.coordinates[1] * scaleY));
-    nations.push(new Nation(new Cell(x, y), new PlayerInfo(mn.name, PlayerType.Nation, null, "nat" + nations.length))); }
+  if (mc.realNations) {
+    // Real manifest nations scaled to the game-map resolution and snapped to the nearest land.
+    const scaleX = W / man.map.width, scaleY = H / man.map.height;
+    const snapLand = (x: number, y: number) => {
+      for (let r = 0; r < 20; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+        if (gameMap.isLand(gameMap.ref(xx, yy))) return [xx, yy]; }
+      return [Math.max(0, Math.min(W - 1, x)), Math.max(0, Math.min(H - 1, y))]; };
+    const manNats: any[] = man.nations.filter((n: any) => n.coordinates);
+    const stride = NUM_NATIONS >= manNats.length ? 1 : Math.ceil(manNats.length / NUM_NATIONS);
+    const chosen = manNats.filter((_, i) => i % stride === 0).slice(0, NUM_NATIONS);
+    for (const mn of chosen) { const [x, y] = snapLand(Math.floor(mn.coordinates[0] * scaleX), Math.floor(mn.coordinates[1] * scaleY));
+      nations.push(new Nation(new Cell(x, y), new PlayerInfo(mn.name, PlayerType.Nation, null, "nat" + nations.length))); }
+  } else {
+    // Map has no manifest nations (e.g. big_plains) — inject them at random land positions.
+    for (let i = 0; i < NUM_NATIONS; i++) { let x, y, t; do { x = Math.floor(rand()*W); y = Math.floor(rand()*H); t = gameMap.ref(x,y); } while (!gameMap.isLand(t));
+      nations.push(new Nation(new Cell(x, y), new PlayerInfo("Nat" + i, PlayerType.Nation, null, "nat" + i))); }
+  }
   game = createGame([], nations, gameMap, mini, config);
   const exec = new Executor(game, "env_" + seed, undefined);
   game.addExecution(...exec.nationExecutions()); game.addExecution(...exec.spawnTribes(BOTS)); game.addExecution(new WinCheckExecution());
@@ -131,9 +149,10 @@ async function reset(seed: number): Promise<number[]> {
   for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) { const t = game.ref(x, y);
     if (game.isLand(t) && !game.isImpassable(t) && !game.hasOwner(t)) { const d = (x-tx)*(x-tx)+(y-ty)*(y-ty); if (d < bd) { bd = d; spawn = t; } } }
   game.addExecution(new SpawnExecution("env_" + seed, info, spawn));
-  game.executeNextTick();
-  me = game.player("agent"); land = game.numLandTiles(); tick = 0; prevShare = me.isAlive() ? me.numTilesOwned()/land : 0;
-  peakShare = prevShare; prevCities = me.isAlive() ? me.unitCount(UnitType.City) : 0;
+  me = game.player("agent");
+  for (let k = 0; k < 15 && !me.isAlive(); k++) game.executeNextTick();  // ensure the agent has actually spawned before we start
+  land = game.numLandTiles(); tick = 0; prevShare = me.isAlive() ? me.numTilesOwned()/land : 0;
+  peakShare = prevShare; peakEcon = me.isAlive() ? econCount(me) : 0;
   return observe();
 }
 
@@ -142,18 +161,21 @@ function step(action: number, troop: number) {
   for (let i = 0; i < DECIDE_EVERY; i++) { game.executeNextTick(); tick++; if (!me.isAlive() && tick > 50) break; }
   const alive = me.isAlive();
   const curShare = alive ? me.numTilesOwned()/land : 0;
-  const curCities = alive ? me.unitCount(UnitType.City) : prevCities;
-  // Momentum reward: dense expansion delta + a bootstrap bonus for each city built (economy).
-  // No flat survival term — that just paid the agent to turtle behind alliances.
-  let reward = 3 * (curShare - prevShare) + 0.2 * Math.max(0, curCities - prevCities);
-  prevShare = curShare; prevCities = curCities;
-  if (alive) peakShare = Math.max(peakShare, curShare);
+  const curEcon = alive ? econCount(me) : peakEcon;
+  // Territory-DOMINANT reward: expansion is the main dense signal. Economy is a SMALL, uncapped,
+  // log-scaled bonus per new structure (money spent) — it keeps paying even late (never caps) but
+  // stays too small to dominate, so PPO learns economy as a *means* to territory, not the goal.
+  // Banked (peak-tracked) so losing/rebuilding can't farm it; no survival term (that bred turtling).
+  let reward = 4 * (curShare - prevShare)
+    + 0.15 * Math.max(0, Math.log1p(curEcon) - Math.log1p(peakEcon));
+  prevShare = curShare;
+  if (alive) { peakShare = Math.max(peakShare, curShare); peakEcon = Math.max(peakEcon, curEcon); }
   const aliveP = game.players().filter((p: any) => p.isPlayer() && p.isAlive()).length;
   const done = !alive || tick >= MAX_TICKS || aliveP <= 1;
   if (done) {
-    reward += 5 * peakShare;                                  // BANK the peak: growth counts even if it later dies
-    if (alive && me.numTilesOwned() >= 0.8*land) reward += 5; // decisive win
-    if (!alive) reward -= 0.15;                               // modest death penalty (< peak bonus, so aggression pays)
+    reward += 8 * peakShare;                                   // BANK the peak territory (dominant term)
+    if (alive && me.numTilesOwned() >= 0.8*land) reward += 10; // winning is the biggest payoff by far
+    if (!alive) reward -= 0.15;                                // modest death penalty (< peak bonus, so aggression pays)
   }
   return { obs: observe(), reward, done };
 }

@@ -5,9 +5,9 @@ import subprocess, json, os
 import torch, torch.nn as nn
 from torch.distributions import Categorical
 
-N_OBS, N_ACT, N_HID = 16, 12, 24
+N_OBS, N_ACT, N_HID = 16, 13, 24
 ACTIONS = ["expandEmpty","attackWeak","attackStrong","acceptAlly","reqAllyUp","buildCity",
-           "buildDefense","buildSilo","buildSAM","nuke","boatAttack","buildPort"]
+           "buildDefense","buildSilo","buildSAM","nuke","boatAttack","buildPort","buildFactory"]
 
 class PolicyNet(nn.Module):
     def __init__(self):
@@ -20,7 +20,7 @@ class PolicyNet(nn.Module):
         return out[..., :N_ACT], out[..., N_ACT]
 
 net = PolicyNet()
-net.load_state_dict(torch.load(os.path.join("data", "torch_policy.pt")))
+net.load_state_dict(torch.load(os.path.join("data", "torch_policy.pt")), strict=False)  # ignore PPO's extra critic (vf.*) keys
 net.eval()
 
 def choose(obs):

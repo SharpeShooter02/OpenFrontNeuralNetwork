@@ -9,7 +9,7 @@ import subprocess, json, os, sys
 import torch, torch.nn as nn
 from torch.distributions import Categorical, Normal
 
-N_OBS, N_ACT, N_HID = 16, 12, 24
+N_OBS, N_ACT, N_HID = 16, 13, 24
 GAMMA = 0.99
 LR = 3e-3
 WEIGHT_DECAY = 1e-4                            # light L2: shrinks features that aren't pulling their weight

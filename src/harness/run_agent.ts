@@ -23,32 +23,45 @@ console.warn = (...a: any[]) => { if (typeof a[0] === "string" && a[0].startsWit
 const SEED = +(process.env.SEED ?? 777);          // e.g. SEED=90001 to watch held-out validation world #1
 const gameID = "env_" + SEED;                     // mirror env_server's reset exactly (tribe placement + spawn)
 let rs = SEED >>> 0; const rand = () => (rs = (Math.imul(rs, 1103515245) + 12345) >>> 0) / 0xffffffff;
-const NUM_NATIONS = +(process.env.NUM_NATIONS ?? 15), BOTS = +(process.env.BOTS ?? 100);  // density-matched, mirrors env_server
+// Map selection mirrors env_server (MAP=box default). Watch the trained agent on the same maps it trains on.
+const MAP = process.env.MAP ?? "box";
+const MAPS: any = {
+  world:     { rel: "tests/testdata/maps/world",      game: "map4x",  mini: "map16x", realNations: true },
+  bigplains: { rel: "tests/testdata/maps/big_plains", game: "map",    mini: "map4x",  realNations: false },
+  box:       { rel: "resources/maps/thebox",          game: "map16x", mini: "map16x", realNations: true },
+};
+const mc = MAPS[MAP];
+const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [6, 15] };
+const NUM_NATIONS = +(process.env.NUM_NATIONS ?? DEF[MAP][0]), BOTS = +(process.env.BOTS ?? DEF[MAP][1]);
 const FRAME_EVERY = 30, DECISION_EVERY = 20, MAX_TICKS = 12000, MAX_GAME_MS = 60000;
 const dir = path.dirname(fileURLToPath(import.meta.url));
-const md = path.join(dir, "../../vendor/OpenFrontIO/tests/testdata/maps/world");
+const md = path.join(dir, "../../vendor/OpenFrontIO/" + mc.rel);
 const man = JSON.parse(fs.readFileSync(path.join(md, "manifest.json"), "utf8"));
-const gameMap = await genTerrainFromBin(man.map4x, fs.readFileSync(path.join(md, "map4x.bin")));
-const mini = await genTerrainFromBin(man.map16x, fs.readFileSync(path.join(md, "map16x.bin")));
+const gameMap = await genTerrainFromBin(man[mc.game], fs.readFileSync(path.join(md, mc.game + ".bin")));
+const mini = await genTerrainFromBin(man[mc.mini], fs.readFileSync(path.join(md, mc.mini + ".bin")));
 
 const cfg: any = { gameMap: GameMapType.World, gameMapSize: GameMapSize.Normal, gameMode: GameMode.FFA,
   gameType: GameType.Singleplayer, difficulty: Difficulty.Medium, nations: "default",
   donateGold: false, donateTroops: false, bots: BOTS, infiniteGold: false, infiniteTroops: false, instantBuild: false, randomSpawn: false };
 const config = new Config(cfg, null as any, false);
 const W = gameMap.width(), H = gameMap.height();
-// Real world-manifest nations scaled to map4x and snapped to land (mirrors env_server).
-const scaleX = W / man.map.width, scaleY = H / man.map.height;
-const snapLand = (x: number, y: number) => {
-  for (let r = 0; r < 20; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
-    const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
-    if (gameMap.isLand(gameMap.ref(xx, yy))) return [xx, yy]; }
-  return [Math.max(0, Math.min(W - 1, x)), Math.max(0, Math.min(H - 1, y))]; };
-const manNats: any[] = man.nations.filter((n: any) => n.coordinates);
-const stride = NUM_NATIONS >= manNats.length ? 1 : Math.ceil(manNats.length / NUM_NATIONS);
-const chosen = manNats.filter((_, i) => i % stride === 0).slice(0, NUM_NATIONS);
 const nations: Nation[] = [];
-for (const mn of chosen) { const [x, y] = snapLand(Math.floor(mn.coordinates[0] * scaleX), Math.floor(mn.coordinates[1] * scaleY));
-  nations.push(new Nation(new Cell(x, y), new PlayerInfo(mn.name, PlayerType.Nation, null, "nat" + nations.length))); }
+if (mc.realNations) {
+  const scaleX = W / man.map.width, scaleY = H / man.map.height;
+  const snapLand = (x: number, y: number) => {
+    for (let r = 0; r < 20; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+      if (gameMap.isLand(gameMap.ref(xx, yy))) return [xx, yy]; }
+    return [Math.max(0, Math.min(W - 1, x)), Math.max(0, Math.min(H - 1, y))]; };
+  const manNats: any[] = man.nations.filter((n: any) => n.coordinates);
+  const stride = NUM_NATIONS >= manNats.length ? 1 : Math.ceil(manNats.length / NUM_NATIONS);
+  const chosen = manNats.filter((_, i) => i % stride === 0).slice(0, NUM_NATIONS);
+  for (const mn of chosen) { const [x, y] = snapLand(Math.floor(mn.coordinates[0] * scaleX), Math.floor(mn.coordinates[1] * scaleY));
+    nations.push(new Nation(new Cell(x, y), new PlayerInfo(mn.name, PlayerType.Nation, null, "nat" + nations.length))); }
+} else {
+  for (let i = 0; i < NUM_NATIONS; i++) { let x, y, t; do { x = Math.floor(rand()*W); y = Math.floor(rand()*H); t = gameMap.ref(x,y); } while (!gameMap.isLand(t));
+    nations.push(new Nation(new Cell(x, y), new PlayerInfo("Nat" + i, PlayerType.Nation, null, "nat" + i))); }
+}
 
 const game = createGame([], nations, gameMap, mini, config);
 const AGENT_ID = "agent";
@@ -65,12 +78,11 @@ let spawnTile = -1, bd = Infinity;
 for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) { const t = game.ref(x, y);
   if (game.isLand(t) && !game.isImpassable(t) && !game.hasOwner(t)) { const d = (x-tx)*(x-tx)+(y-ty)*(y-ty); if (d < bd) { bd = d; spawnTile = t; } } }
 game.addExecution(new SpawnExecution(gameID, agentInfo, spawnTile));
-game.executeNextTick();
 const me = game.player(AGENT_ID);
+for (let k = 0; k < 15 && !me.isAlive(); k++) game.executeNextTick();  // ensure the agent has spawned (mirrors env_server)
 const OPPONENTS = NUM_NATIONS + BOTS;
 
-const policy = new Policy(16, 24, 12);
-let smpS = 12345; const smpl = () => (smpS = (Math.imul(smpS, 1103515245) + 12345) >>> 0) / 0xffffffff;  // seeded sampler for action choice
+const policy = new Policy(16, 24, 13);
 // Prefer the torch-trained weights (exported by train_torch/export_weights.py), else the ES weights.
 const torchPath = path.join(dir, "../../data/torch_weights.json");
 const esPath = path.join(dir, "../../data/best_weights.json");
@@ -139,10 +151,9 @@ for (; tick < MAX_TICKS; tick++) {
       strongest?Math.min(1,me.troops()/Math.max(1,strongest.troops())/2):1,
       Math.min(1, sumTroops/troopsN/3), Math.min(1, allyTroops/troopsN),
       offererTroops>0?Math.min(1, offererTroops/troopsN/2):0];
-    // Sample from the action distribution (as during training) rather than argmax, so the
-    // recorded game reflects the stochastic policy's actual behavior instead of collapsing to one move.
-    const { probs, troopFraction } = policy.forward(obs);
-    let r = smpl(), action = 0; for (let i = 0; i < probs.length; i++) { r -= probs[i]; if (r <= 0) { action = i; break; } }
+    // Greedy (argmax) for a deterministic, representative "best play" replay — the JS sampler
+    // doesn't match torch's, so sampling here would show an unrepresentative one-off rollout.
+    const { action, troopFraction } = policy.forward(obs);
     const commit = Math.floor(me.troops() * Math.max(0.01, Math.min(1, troopFraction)));
     // Build on a currently-owned tile (the fixed spawn tile is often captured by mid-game).
     const ownedTile = () => { if (game.ownerID(spawnTile) === me.smallID()) return spawnTile; for (const t of me.tiles()) return t; return spawnTile; };
@@ -173,6 +184,7 @@ for (; tick < MAX_TICKS; tick++) {
       if (ge) { let dst = -1; for (const t of ge.tiles()) { if (game.isShore(t)) { dst = t; break; } } if (dst < 0) for (const t of ge.tiles()) { dst = t; break; }
         if (dst >= 0 && canBuildTransportShip(game, me, dst) !== false) game.addExecution(new TransportShipExecution(me, dst, commit)); } }
     else if (action === 11 && shoreTile >= 0) build(UnitType.Port, shoreTile);
+    else if (action === 12) build(UnitType.Factory, buildTile());
     if (tick % 1000 === 0) console.log(`tick ${tick}: ${ACTIONS[action]} | tiles=${me.numTilesOwned()} gold=${me.gold()}`);
   }
   game.executeNextTick();

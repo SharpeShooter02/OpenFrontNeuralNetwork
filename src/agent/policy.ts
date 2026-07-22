@@ -4,7 +4,7 @@
 export const ACTIONS = [
   "expand", "attackWeakest", "attackStrongest", "acceptAlliance", "requestAllianceUp",
   "buildCity", "buildDefensePost", "buildMissileSilo", "buildSAMLauncher", "launchNuke",
-  "boatAttack", "buildPort",
+  "boatAttack", "buildPort", "buildFactory",
 ] as const;
 
 function makeRng(seed: number) { let s = seed >>> 0; return () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; return s / 0xffffffff; }; }

@@ -410,3 +410,33 @@ replicates `env_server`'s exact reset (gameID `env_<seed>`, seed-varied spawn), 
 npm run agent` plays held-out world #1 — you can *see* the games behind the val spikes. (World +
 policy match the env; the exact sampled moves differ since JS vs torch use different RNGs.) The
 diagnostic (`diagnose.py`) now also reports on held-out seeds (90001+), not training-pool worlds.
+
+## Step 23 — PPO era: value critic + The Box map + territory-dominant reward (it wins)
+**PPO (`train_torch/ppo.py`):** REINFORCE + three upgrades — a **value-function critic** (GAE
+advantages → low variance, discounts spawn luck, credits the long build→grow→hold chain), **sample
+reuse** (K epochs of minibatch updates per batch), and a **clipped trust region** (stable, no
+climb-then-collapse). Actor keeps the same `fc1→fc2` shape so `export_weights.py`/`run_agent.ts`
+still work; the critic is an extra head (`diagnose.py` loads `strict=False` to ignore it). Added a
+13th action **`buildFactory`** and made economy structures = city+port+factory.
+
+**The reward lesson (a real detour):** we first *directly* rewarded economy (`log(structures)`) and
+troop-capacity (`peak-troops`). It **backfired** — the agent maxed those on a tiny base and turtled
+(scored +3 owning <3% of the map). Taking land is hard and pays little until you're big; building
+economy is easy and pays on any base — so a directly-rewarded economy becomes the *goal*, not the
+means. **Fix:** territory-DOMINANT reward — `4·Δshare`, terminal `8·peakShare`, `+10` win; economy
+kept only as a **small uncapped log bonus** (rewards spending even late, can't dominate); dropped
+peak-troops entirely. Now PPO learns economy as the *means* to territory.
+
+**The map (thanks to the user's push):** all-land squares consolidate too fast when small
+(big_plains 200×200 → games end in ~50 ticks, no room). Switched training to **"The Box"**
+(`MAP=box`, resources/maps/thebox, map16x 512×512, all-land) with **sparse** density (6 nations +
+15 tribes) so its size actually functions as room. ~100–400-step games at ~1.5 s each — **~5× faster
+iteration than the world map** (25 min vs 2 h per 1000 eps). `MAP` env var also supports `world`.
+
+**Result — the payoff of the whole arc:** on held-out worlds the agent now **conquers the entire
+map** — land climbs `7% → 28% → 59% → 82% → 100%`, building 8 cities *as it expands*, for **+22
+reward** (2 of 3 held-out seeds = total wins; greedy replays survive full games at ~53% of the map).
+Economy is finally a *means* to territory, not a turtle. `run_agent.ts` gained `MAP=box` support and
+switched to **greedy** action selection (the strong policy plays best deterministically; the JS
+sampler didn't match torch). **Next:** learned alliance management (break-alliance action + relational
+obs) and the spatial "where" upgrades remain the open architectural frontiers.
