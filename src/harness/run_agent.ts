@@ -31,7 +31,7 @@ const MAPS: any = {
   box:       { rel: "resources/maps/thebox",          game: "map16x", mini: "map16x", realNations: true },
 };
 const mc = MAPS[MAP];
-const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [6, 15] };
+const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [60, 400] };  // realistic crowd (mirror env_server)
 const NUM_NATIONS = +(process.env.NUM_NATIONS ?? DEF[MAP][0]), BOTS = +(process.env.BOTS ?? DEF[MAP][1]);
 const FRAME_EVERY = 30, DECISION_EVERY = 20, MAX_TICKS = 12000, MAX_GAME_MS = 60000;
 const dir = path.dirname(fileURLToPath(import.meta.url));

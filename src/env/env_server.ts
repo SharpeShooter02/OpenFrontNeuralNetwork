@@ -30,7 +30,7 @@ const MAPS: any = {
   box:       { rel: "resources/maps/thebox",          game: "map16x", mini: "map16x", realNations: true },
 };
 const mc = MAPS[MAP];
-const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [6, 15] };  // sparse on the big box = room to grow, longer games
+const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [60, 400] };  // realistic crowd: ~460 players, no cheap outlast-wins
 const NUM_NATIONS = +(process.env.NUM_NATIONS ?? DEF[MAP][0]), BOTS = +(process.env.BOTS ?? DEF[MAP][1]), MAX_TICKS = 12000, DECIDE_EVERY = 20;
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const md = path.join(dir, "../../vendor/OpenFrontIO/" + mc.rel);
@@ -130,15 +130,15 @@ async function reset(seed: number): Promise<number[]> {
         if (gameMap.isLand(gameMap.ref(xx, yy))) return [xx, yy]; }
       return [Math.max(0, Math.min(W - 1, x)), Math.max(0, Math.min(H - 1, y))]; };
     const manNats: any[] = man.nations.filter((n: any) => n.coordinates);
-    const stride = NUM_NATIONS >= manNats.length ? 1 : Math.ceil(manNats.length / NUM_NATIONS);
-    const chosen = manNats.filter((_, i) => i % stride === 0).slice(0, NUM_NATIONS);
+    const useN = Math.min(NUM_NATIONS, manNats.length);
+    const stride = useN >= manNats.length ? 1 : Math.ceil(manNats.length / useN);
+    const chosen = manNats.filter((_, i) => i % stride === 0).slice(0, useN);
     for (const mn of chosen) { const [x, y] = snapLand(Math.floor(mn.coordinates[0] * scaleX), Math.floor(mn.coordinates[1] * scaleY));
       nations.push(new Nation(new Cell(x, y), new PlayerInfo(mn.name, PlayerType.Nation, null, "nat" + nations.length))); }
-  } else {
-    // Map has no manifest nations (e.g. big_plains) — inject them at random land positions.
-    for (let i = 0; i < NUM_NATIONS; i++) { let x, y, t; do { x = Math.floor(rand()*W); y = Math.floor(rand()*H); t = gameMap.ref(x,y); } while (!gameMap.isLand(t));
-      nations.push(new Nation(new Cell(x, y), new PlayerInfo("Nat" + i, PlayerType.Nation, null, "nat" + i))); }
   }
+  // Fabricate extra nations at random land to reach NUM_NATIONS (maps ship with few; we want realistic density).
+  while (nations.length < NUM_NATIONS) { let x, y, t; do { x = Math.floor(rand()*W); y = Math.floor(rand()*H); t = gameMap.ref(x,y); } while (!gameMap.isLand(t));
+    nations.push(new Nation(new Cell(x, y), new PlayerInfo("Nat" + nations.length, PlayerType.Nation, null, "nat" + nations.length))); }
   game = createGame([], nations, gameMap, mini, config);
   const exec = new Executor(game, "env_" + seed, undefined);
   game.addExecution(...exec.nationExecutions()); game.addExecution(...exec.spawnTribes(BOTS)); game.addExecution(new WinCheckExecution());
