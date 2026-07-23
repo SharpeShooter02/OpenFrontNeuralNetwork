@@ -31,7 +31,9 @@ const MAPS: any = {
 };
 const mc = MAPS[MAP];
 const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [20, 160] };  // ~180 players = real density that FITS map16x (460 over-packed it)
-const NUM_NATIONS = +(process.env.NUM_NATIONS ?? DEF[MAP][0]), BOTS = +(process.env.BOTS ?? DEF[MAP][1]), MAX_TICKS = 12000, DECIDE_EVERY = 20;
+const NUM_NATIONS = +(process.env.NUM_NATIONS ?? DEF[MAP][0]), BOTS = +(process.env.BOTS ?? DEF[MAP][1]), MAX_TICKS = 12000;
+const DECIDE_EVERY = +(process.env.DECIDE_EVERY ?? 10);   // ticks between decisions — lower = more actions/game (throughput)
+const GW = 32, GC = 6;   // spatial observation: GWxGW pooled grid, GC channels (mine/enemy/neutral/impassable/myStruct/enemyStruct)
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const md = path.join(dir, "../../vendor/OpenFrontIO/" + mc.rel);
 const man = JSON.parse(fs.readFileSync(path.join(md, "manifest.json"), "utf8"));
@@ -73,6 +75,31 @@ function observe(): number[] {
     Math.min(1, s.sumTroops/troops/3),                                                // total border pressure (all neighbors)
     Math.min(1, allyTroops/troops),                                                   // ally backing
     offererTroops>0?Math.min(1, offererTroops/troops/2):0];                           // strength of strongest alliance offerer
+}
+
+// Spatial observation: the map as GC channels of a GWxGW pooled grid (the agent's "eyes"). Channels:
+// 0 mine, 1 enemy, 2 neutral land, 3 impassable/water, 4 my structures, 5 enemy structures. Ownership
+// is sampled at each pooled cell's center (cheap, ~GW^2 samples); structures are stamped from units().
+// Flattened as grid[c*GW*GW + gy*GW + gx]. Only computed when the driver asked for it (SPATIAL flag).
+let SPATIAL = false;
+function observeSpatial(): number[] {
+  const g = new Array(GC * GW * GW).fill(0);
+  if (!me.isAlive()) return g;
+  const sx = W / GW, sy = H / GW, mySmall = me.smallID(), area = GW * GW;
+  for (let gy = 0; gy < GW; gy++) for (let gx = 0; gx < GW; gx++) {
+    const x = Math.min(W-1, Math.floor((gx+0.5)*sx)), y = Math.min(H-1, Math.floor((gy+0.5)*sy)), t = game.ref(x, y), idx = gy*GW + gx;
+    if (!game.isLand(t) || game.isImpassable(t)) { g[3*area + idx] = 1; continue; }
+    if (!game.hasOwner(t)) { g[2*area + idx] = 1; continue; }
+    const oid = game.ownerID(t);
+    if (oid === mySmall) g[idx] = 1;
+    else { const o = game.playerBySmallID(oid); g[(o.isPlayer() && me.isFriendly(o) ? 0 : 1)*area + idx] = o.isPlayer() && me.isFriendly(o) ? 0.5 : 1; }
+  }
+  for (const u of game.units([UnitType.City, UnitType.DefensePost, UnitType.MissileSilo, UnitType.SAMLauncher, UnitType.Port, UnitType.Factory])) {
+    if (!u.isActive()) continue; const tt = u.tile();
+    const gx = Math.min(GW-1, Math.floor(game.x(tt)/sx)), gy = Math.min(GW-1, Math.floor(game.y(tt)/sy)), idx = gy*GW + gx;
+    g[(u.owner().smallID() === mySmall ? 4 : 5)*area + idx] = 1;
+  }
+  return g;
 }
 
 // --- Diplomacy candidate scoring: the policy picks WHICH player to accept/request/break, instead of
@@ -234,7 +261,7 @@ function step(action: number, troop: number, target: number, ptarget: number) {
     if (alive && me.numTilesOwned() >= 0.8*land) reward += 10; // winning is the biggest payoff by far
     if (!alive) reward -= 0.15;                                // modest death penalty (< peak bonus, so aggression pays)
   }
-  return { obs: observe(), cands: candidates(), ptiles: placeTiles(), reward, done };
+  return { obs: observe(), cands: candidates(), ptiles: placeTiles(), ...(SPATIAL ? { spatial: observeSpatial() } : {}), reward, done };
 }
 
 const rl = readline.createInterface({ input: process.stdin });
@@ -242,7 +269,7 @@ rl.on("line", async (line) => {
   if (!line.trim()) return;
   const cmd = JSON.parse(line);
   let resp: any;
-  if (cmd.cmd === "reset") resp = { obs: await reset(cmd.seed ?? 0), cands: candidates(), ptiles: placeTiles(), reward: 0, done: false };
+  if (cmd.cmd === "reset") { SPATIAL = !!cmd.spatial; resp = { obs: await reset(cmd.seed ?? 0), cands: candidates(), ptiles: placeTiles(), ...(SPATIAL ? { spatial: observeSpatial() } : {}), reward: 0, done: false }; }
   else if (cmd.cmd === "step") resp = step(cmd.action, cmd.troop, cmd.target ?? 0, cmd.ptarget ?? -1);
   else resp = { error: "unknown cmd" };
   process.stdout.write(JSON.stringify(resp) + "\n");
