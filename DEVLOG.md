@@ -466,3 +466,20 @@ recurring lesson: PPO uses what the reward rewards. The capability is built; mak
 alliances to pay off — longer games (Box `map4x`) where protection buys time to expand, and/or a mild
 survival/coordination incentive. `diagnose.py` now reports accept/request/break counts; `run_agent.ts`
 uses a heuristic for the diplomacy action (no candidate head in the TS viewer yet).
+
+## Step 25 — Learned structure placement (candidate scoring, part 2)
+Reused the diplomacy candidate-scoring pattern for the "where" of building. The env emits up to 8
+**owned-tile candidates** per step with 4 tactical features (frontline, near-own-structure, interiorness,
+spacing); the policy got a **type-aware placement head** (`[tile feats + structure-type one-hot] -> 16
+-> 1`) so it can learn different rules per structure (defense->frontline, factory->interior). PPO adds
+the placement log-prob to the ratio only on defense/silo/SAM/factory builds. City/port/nuke stay heuristic.
+
+**Result:** the machinery works end-to-end and placement is actively used — the agent builds many
+factories (16-20/game) and places them at ~0% frontline (interior/safe, which is correct). Reward is
+strong (held-out seed 90001 = +22.75, a near-total win). **But** the behavioral payoff is limited by the
+same wall as diplomacy: **PPO only exercises what the reward values.** Defense posts are barely built
+(0-3/game, unrewarded) so their placement head is starved; and the factory "interior" signal is
+suggestive but not conclusive (frontline tiles are rare in the candidate pool regardless). Diplomacy
+still dormant. Takeaway: candidate scoring is a proven, general mechanism for learned who/where, but to
+make *defense* placement and *alliances* actually matter, the reward has to value holding/survival --
+otherwise the capabilities sit unused. `run_agent.ts` still uses the spread heuristic for placement.
