@@ -102,6 +102,38 @@ function observeSpatial(): number[] {
   return g;
 }
 
+// --- Optional replay recording for the viewer (works for ANY driver, incl. the CNN). Enabled per-reset
+// via {record:true}; snapshots pooled tile-ownership + buildings/gold/allies each step and writes
+// viz/replay.js on episode end (same format run_agent.ts produces).
+const PAL = ["#e6194B","#3cb44b","#ffe119","#4363d8","#f58231","#911eb4","#42d4f4","#f032e6","#bfef45","#fabed4","#469990","#dcbeff","#9A6324","#800000","#808000","#000075"];
+const TCr: any = { [UnitType.City]:1, [UnitType.Port]:2, [UnitType.Factory]:3, [UnitType.MissileSilo]:4, [UnitType.DefensePost]:5, [UnitType.SAMLauncher]:6 };
+let REC: any = null;
+function recInit() {
+  const DS = Math.max(1, Math.ceil(Math.max(W, H) / 240)), RW = Math.ceil(W/DS), RH = Math.ceil(H/DS);
+  const terrain = new Uint8Array(RW*RH);
+  for (let ry=0; ry<RH; ry++) for (let rx=0; rx<RW; rx++) { const t=game.ref(Math.min(W-1,rx*DS),Math.min(H-1,ry*DS)); terrain[ry*RW+rx]=game.isLand(t)&&!game.isImpassable(t)?1:0; }
+  REC = { DS, RW, RH, terrain, idToIdx:new Map(), legend:[] as any[], deltas:[] as string[], frameTicks:[] as number[], buildingFrames:[] as number[][], goldFrames:[] as number[][], allyFrames:[] as number[][], prev:new Uint8Array(RW*RH) };
+  recSnap();
+}
+function recSnap() {
+  const R = REC; const { DS, RW, RH } = R;
+  const ownerAt = (x:number,y:number)=>{ const t=game.ref(x,y); if(!game.hasOwner(t)) return 0; const sid=game.ownerID(t); let k=R.idToIdx.get(sid); if(k===undefined){k=R.legend.length+1;R.idToIdx.set(sid,k);const p:any=game.playerBySmallID(sid);R.legend.push({name:p?.name?.()??("#"+sid),color:p?.id?.()==="agent"?"#ffffff":PAL[(k-1)%PAL.length]});} return k; };
+  const cur=new Uint8Array(RW*RH);
+  for(let ry=0;ry<RH;ry++)for(let rx=0;rx<RW;rx++)cur[ry*RW+rx]=ownerAt(Math.min(W-1,rx*DS),Math.min(H-1,ry*DS));
+  if(me.isAlive()){let ak=R.idToIdx.get(me.smallID());if(ak===undefined){ak=R.legend.length+1;R.idToIdx.set(me.smallID(),ak);R.legend.push({name:"AGENT",color:"#ffffff"});}for(const t of me.tiles())cur[Math.min(RH-1,Math.floor(game.y(t)/DS))*RW+Math.min(RW-1,Math.floor(game.x(t)/DS))]=ak;}
+  const ch:number[]=[];for(let i=0;i<cur.length;i++)if(cur[i]!==R.prev[i])ch.push(i,cur[i]);
+  const nn=ch.length/2;const buf=new Uint8Array(nn*5);const dv=new DataView(buf.buffer);for(let k=0;k<nn;k++){dv.setUint32(k*5,ch[k*2],true);dv.setUint8(k*5+4,ch[k*2+1]);}
+  R.deltas.push(Buffer.from(buf).toString("base64"));R.frameTicks.push(game.ticks());R.prev=cur;
+  const bld:number[]=[];for(const u of game.units()){if(!u.isActive())continue;const c=TCr[u.type()];if(!c)continue;const tt=u.tile();const rx=Math.min(RW-1,Math.floor(game.x(tt)/DS)),ry=Math.min(RH-1,Math.floor(game.y(tt)/DS));const k=R.idToIdx.get(u.owner().smallID());bld.push(ry*RW+rx,c,k??0);}R.buildingFrames.push(bld);
+  const gold:number[]=new Array(R.legend.length).fill(0);for(const pl of game.players()){if(!pl.isPlayer())continue;const k=R.idToIdx.get(pl.smallID());if(k!==undefined)gold[k-1]=Math.round(Number(pl.gold()));}R.goldFrames.push(gold);
+  R.allyFrames.push(me.isAlive()?me.allies().map((a:any)=>R.idToIdx.get(a.smallID())).filter((k:any)=>k!==undefined):[]);
+}
+function recWrite() {
+  const R=REC; const outDir=path.join(dir,"../../viz"); fs.mkdirSync(outDir,{recursive:true});
+  const payload={W:R.RW,H:R.RH,interval:DECIDE_EVERY,winner:"(agent)",terrain:Buffer.from(R.terrain).toString("base64"),legend:R.legend,frameTicks:R.frameTicks,deltas:R.deltas,buildingFrames:R.buildingFrames,goldFrames:R.goldFrames,allyFrames:R.allyFrames};
+  fs.writeFileSync(path.join(outDir,"replay.js"),"window.REPLAY = "+JSON.stringify(payload)+";");
+}
+
 // --- Diplomacy candidate scoring: the policy picks WHICH player to accept/request/break, instead of
 // the old "accept all / request all" heuristics. candidates() returns up to KCAND rows of FCAND
 // features (row 0 = no-op); curCands holds the matching {player, kind, req} so step() can apply the
@@ -261,6 +293,7 @@ function step(action: number, troop: number, target: number, ptarget: number) {
     if (alive && me.numTilesOwned() >= 0.8*land) reward += 10; // winning is the biggest payoff by far
     if (!alive) reward -= 0.15;                                // modest death penalty (< peak bonus, so aggression pays)
   }
+  if (REC) { recSnap(); if (done) recWrite(); }
   return { obs: observe(), cands: candidates(), ptiles: placeTiles(), ...(SPATIAL ? { spatial: observeSpatial() } : {}), reward, done };
 }
 
@@ -269,7 +302,7 @@ rl.on("line", async (line) => {
   if (!line.trim()) return;
   const cmd = JSON.parse(line);
   let resp: any;
-  if (cmd.cmd === "reset") { SPATIAL = !!cmd.spatial; resp = { obs: await reset(cmd.seed ?? 0), cands: candidates(), ptiles: placeTiles(), ...(SPATIAL ? { spatial: observeSpatial() } : {}), reward: 0, done: false }; }
+  if (cmd.cmd === "reset") { SPATIAL = !!cmd.spatial; const obs0 = await reset(cmd.seed ?? 0); REC = null; if (cmd.record) recInit(); resp = { obs: obs0, cands: candidates(), ptiles: placeTiles(), ...(SPATIAL ? { spatial: observeSpatial() } : {}), reward: 0, done: false }; }
   else if (cmd.cmd === "step") resp = step(cmd.action, cmd.troop, cmd.target ?? 0, cmd.ptarget ?? -1);
   else resp = { error: "unknown cmd" };
   process.stdout.write(JSON.stringify(resp) + "\n");
