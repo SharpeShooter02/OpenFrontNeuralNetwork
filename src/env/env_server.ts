@@ -195,13 +195,16 @@ function placeTiles(): number[][] {
   return rows;
 }
 
-function act(action: number, troopFraction: number, target: number, ptarget: number) {
+// Multi-action: the policy fires ANY SUBSET of the 13 actions each decision (throughput, like the
+// nations do), and keeps a learned RESERVE of troops (discipline). Committable = troops*(1-reserve)
+// is split evenly among the fired troop-attacks (expand/weak/strong/boat); builds/diplomacy/nuke are
+// free of troop cost. `actions` is a 0/1 array of length 13.
+function actMulti(actions: number[], reserve: number, target: number, ptarget: number) {
   const s = scan();
-  const commit = Math.floor(me.troops() * Math.max(0.01, Math.min(1, troopFraction)));
-  // Build on a currently-owned tile (the fixed spawn tile is often captured by mid-game).
+  const committable = Math.floor(me.troops() * (1 - Math.max(0, Math.min(1, reserve))));
+  const firedAtk = [0, 1, 2, 10].filter((a) => actions[a]);
+  const per = firedAtk.length ? Math.max(1, Math.floor(committable / firedAtk.length)) : 0;
   const ownedTile = () => { if (game.ownerID(spawn) === me.smallID()) return spawn; for (const t of me.tiles()) return t; return spawn; };
-  // Spread structures out: hand canBuild an owned tile FAR from existing structures, so structureMinDist
-  // doesn't reject it — otherwise every build stacks at one spot and only the 1st city ever places.
   const buildTile = () => {
     const structs = me.units([UnitType.City, UnitType.DefensePost, UnitType.MissileSilo, UnitType.SAMLauncher, UnitType.Port]);
     if (structs.length === 0) return ownedTile();
@@ -214,27 +217,27 @@ function act(action: number, troopFraction: number, target: number, ptarget: num
     return best >= 0 ? best : ownedTile();
   };
   const build = (u: UnitType, tile: number) => { const bt = me.canBuild(u, tile); if (bt) game.addExecution(new ConstructionExecution(me, u, bt)); };
-  const placeTile = () => (ptarget >= 0 && ptarget < curPlace.length) ? curPlace[ptarget] : buildTile();  // learned placement, else spread heuristic
-  if (action === 0 && s.empty) game.addExecution(new AttackExecution(commit, me, game.terraNullius().id()));
-  else if (action === 1 && s.weakest) game.addExecution(new AttackExecution(commit, me, s.weakest.id()));
-  else if (action === 2 && s.strongest) game.addExecution(new AttackExecution(commit, me, s.strongest.id()));
-  else if (action === 3 && target > 0 && target < curCands.length) {   // diplomacy: act on the SCORED player
+  const placeTile = () => (ptarget >= 0 && ptarget < curPlace.length) ? curPlace[ptarget] : buildTile();
+  if (actions[0] && s.empty && per > 0) game.addExecution(new AttackExecution(per, me, game.terraNullius().id()));
+  if (actions[1] && s.weakest && per > 0) game.addExecution(new AttackExecution(per, me, s.weakest.id()));
+  if (actions[2] && s.strongest && per > 0) game.addExecution(new AttackExecution(per, me, s.strongest.id()));
+  if (actions[3] && target > 0 && target < curCands.length) {   // diplomacy on the SCORED player
     const c = curCands[target];
     if (c.kind === "offer") { try { c.req.accept(); } catch {} }
     else if (c.kind === "enemy") { if (c.player.isAlive() && me.canSendAllianceRequest(c.player)) me.createAllianceRequest(c.player); }
     else if (c.kind === "ally") { for (const a of me.alliances()) if (a.other(me) === c.player) { me.breakAlliance(a); break; } }
   }
-  // action 4 = wait / no-op (do nothing this decision)
-  else if (action === 5) build(UnitType.City, buildTile());
-  else if (action === 6) build(UnitType.DefensePost, placeTile());   // learned placement
-  else if (action === 7) build(UnitType.MissileSilo, placeTile());
-  else if (action === 8) build(UnitType.SAMLauncher, placeTile());
-  else if (action === 9 && s.strongest && me.unitCount(UnitType.MissileSilo) > 0) { let tgt: number | null = null; for (const t of s.strongest.tiles()) { tgt = t; break; } if (tgt !== null) game.addExecution(new NukeExecution(UnitType.AtomBomb, me, tgt)); }
-  else if (action === 10) { const ge = game.players().filter((p: any)=>p.isPlayer()&&p.isAlive()&&p.id()!=="agent"&&!me.isFriendly(p)).sort((a: any,b: any)=>a.troops()-b.troops())[0];
+  // actions[4] = wait
+  if (actions[5]) build(UnitType.City, buildTile());
+  if (actions[6]) build(UnitType.DefensePost, placeTile());
+  if (actions[7]) build(UnitType.MissileSilo, placeTile());
+  if (actions[8]) build(UnitType.SAMLauncher, placeTile());
+  if (actions[9] && s.strongest && me.unitCount(UnitType.MissileSilo) > 0) { let tgt: number | null = null; for (const t of s.strongest.tiles()) { tgt = t; break; } if (tgt !== null) game.addExecution(new NukeExecution(UnitType.AtomBomb, me, tgt)); }
+  if (actions[10] && per > 0) { const ge = game.players().filter((p: any)=>p.isPlayer()&&p.isAlive()&&p.id()!=="agent"&&!me.isFriendly(p)).sort((a: any,b: any)=>a.troops()-b.troops())[0];
     if (ge) { let dst = -1; for (const t of ge.tiles()) { if (game.isShore(t)) { dst = t; break; } } if (dst < 0) for (const t of ge.tiles()) { dst = t; break; }
-      if (dst >= 0 && canBuildTransportShip(game, me, dst) !== false) game.addExecution(new TransportShipExecution(me, dst, commit)); } }
-  else if (action === 11 && s.shoreTile >= 0) build(UnitType.Port, s.shoreTile);
-  else if (action === 12) build(UnitType.Factory, placeTile());   // learned placement
+      if (dst >= 0 && canBuildTransportShip(game, me, dst) !== false) game.addExecution(new TransportShipExecution(me, dst, per)); } }
+  if (actions[11] && s.shoreTile >= 0) build(UnitType.Port, s.shoreTile);
+  if (actions[12]) build(UnitType.Factory, placeTile());
 }
 
 async function reset(seed: number): Promise<number[]> {
@@ -282,8 +285,8 @@ async function reset(seed: number): Promise<number[]> {
   return observe();
 }
 
-function step(action: number, troop: number, target: number, ptarget: number) {
-  if (me.isAlive() && me.troops() > 1) act(action, troop, target, ptarget);
+function step(actions: number[], reserve: number, target: number, ptarget: number) {
+  if (me.isAlive() && me.troops() > 1) actMulti(actions, reserve, target, ptarget);
   for (let i = 0; i < DECIDE_EVERY; i++) { game.executeNextTick(); tick++; if (!me.isAlive() && tick > 50) break; }
   const alive = me.isAlive();
   const curShare = alive ? me.numTilesOwned()/land : 0;
@@ -313,7 +316,11 @@ rl.on("line", async (line) => {
   const cmd = JSON.parse(line);
   let resp: any;
   if (cmd.cmd === "reset") { SPATIAL = !!cmd.spatial; const obs0 = await reset(cmd.seed ?? 0); REC = null; if (cmd.record) recInit(); resp = { obs: obs0, cands: candidates(), ptiles: placeTiles(), ...(SPATIAL ? { spatial: observeSpatial() } : {}), reward: 0, done: false }; }
-  else if (cmd.cmd === "step") resp = step(cmd.action, cmd.troop, cmd.target ?? 0, cmd.ptarget ?? -1);
+  else if (cmd.cmd === "step") {
+    let acts = cmd.actions, reserve = cmd.reserve;
+    if (!acts) { acts = new Array(13).fill(0); acts[cmd.action] = 1; reserve = 1 - (cmd.troop ?? 0.5); }  // back-compat: single action -> one-hot
+    resp = step(acts, reserve ?? 0.5, cmd.target ?? 0, cmd.ptarget ?? -1);
+  }
   else resp = { error: "unknown cmd" };
   process.stdout.write(JSON.stringify(resp) + "\n");
 });
