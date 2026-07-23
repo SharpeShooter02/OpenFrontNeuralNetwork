@@ -105,7 +105,8 @@ function observeSpatial(): number[] {
 // --- Optional replay recording for the viewer (works for ANY driver, incl. the CNN). Enabled per-reset
 // via {record:true}; snapshots pooled tile-ownership + buildings/gold/allies each step and writes
 // viz/replay.js on episode end (same format run_agent.ts produces).
-const PAL = ["#e6194B","#3cb44b","#ffe119","#4363d8","#f58231","#911eb4","#42d4f4","#f032e6","#bfef45","#fabed4","#469990","#dcbeff","#9A6324","#800000","#808000","#000075"];
+const PAL = ["#e6194B","#3cb44b","#ffe119","#4363d8","#f58231","#911eb4","#42d4f4","#f032e6","#bfef45","#fabed4","#469990","#dcbeff","#9A6324","#800000","#808000","#000075"];  // vivid = NATIONS
+const TRIBE_PAL = ["#5a5f66","#665f54","#54615a","#5f5461","#586066","#615a4c","#4f5560","#605050"];  // muted/desaturated = TRIBES
 const TCr: any = { [UnitType.City]:1, [UnitType.Port]:2, [UnitType.Factory]:3, [UnitType.MissileSilo]:4, [UnitType.DefensePost]:5, [UnitType.SAMLauncher]:6 };
 let REC: any = null;
 function recInit() {
@@ -117,10 +118,14 @@ function recInit() {
 }
 function recSnap() {
   const R = REC; const { DS, RW, RH } = R;
-  const ownerAt = (x:number,y:number)=>{ const t=game.ref(x,y); if(!game.hasOwner(t)) return 0; const sid=game.ownerID(t); let k=R.idToIdx.get(sid); if(k===undefined){k=R.legend.length+1;R.idToIdx.set(sid,k);const p:any=game.playerBySmallID(sid);R.legend.push({name:p?.name?.()??("#"+sid),color:p?.id?.()==="agent"?"#ffffff":PAL[(k-1)%PAL.length]});} return k; };
+  const ownerAt = (x:number,y:number)=>{ const t=game.ref(x,y); if(!game.hasOwner(t)) return 0; const sid=game.ownerID(t); let k=R.idToIdx.get(sid);
+    if(k===undefined){k=R.legend.length+1;R.idToIdx.set(sid,k);const p:any=game.playerBySmallID(sid);
+      const isAgent=p?.id?.()==="agent"; const kind=isAgent?"agent":(p?.type?.()===PlayerType.Nation?"nation":"tribe");
+      const color=isAgent?"#ffffff":(kind==="nation"?PAL[(k-1)%PAL.length]:TRIBE_PAL[(k-1)%TRIBE_PAL.length]);
+      R.legend.push({name:p?.name?.()??("#"+sid),color,kind});} return k; };
   const cur=new Uint8Array(RW*RH);
   for(let ry=0;ry<RH;ry++)for(let rx=0;rx<RW;rx++)cur[ry*RW+rx]=ownerAt(Math.min(W-1,rx*DS),Math.min(H-1,ry*DS));
-  if(me.isAlive()){let ak=R.idToIdx.get(me.smallID());if(ak===undefined){ak=R.legend.length+1;R.idToIdx.set(me.smallID(),ak);R.legend.push({name:"AGENT",color:"#ffffff"});}for(const t of me.tiles())cur[Math.min(RH-1,Math.floor(game.y(t)/DS))*RW+Math.min(RW-1,Math.floor(game.x(t)/DS))]=ak;}
+  if(me.isAlive()){let ak=R.idToIdx.get(me.smallID());if(ak===undefined){ak=R.legend.length+1;R.idToIdx.set(me.smallID(),ak);R.legend.push({name:"AGENT",color:"#ffffff",kind:"agent"});}for(const t of me.tiles())cur[Math.min(RH-1,Math.floor(game.y(t)/DS))*RW+Math.min(RW-1,Math.floor(game.x(t)/DS))]=ak;}
   const ch:number[]=[];for(let i=0;i<cur.length;i++)if(cur[i]!==R.prev[i])ch.push(i,cur[i]);
   const nn=ch.length/2;const buf=new Uint8Array(nn*5);const dv=new DataView(buf.buffer);for(let k=0;k<nn;k++){dv.setUint32(k*5,ch[k*2],true);dv.setUint8(k*5+4,ch[k*2+1]);}
   R.deltas.push(Buffer.from(buf).toString("base64"));R.frameTicks.push(game.ticks());R.prev=cur;

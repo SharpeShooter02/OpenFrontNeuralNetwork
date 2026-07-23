@@ -101,8 +101,9 @@
   const octx = off.getContext("2d");
   const img = octx.createImageData(W, H);
 
+  const nNat = R.legend.filter((l) => l.kind === 'nation').length, nTribe = R.legend.filter((l) => l.kind === 'tribe').length;
   document.getElementById("meta").textContent =
-    W + "×" + H + " · " + nFrames + " frames · " + R.legend.length + " players · winner: " + R.winner;
+    W + "×" + H + " · " + nFrames + " frames · 🏰 " + nNat + " nations · · " + nTribe + " tribes · winner: " + R.winner;
 
   function draw(fi) {
     const buf = gridAt(fi);
@@ -132,9 +133,10 @@
     const rows = [];
     for (let k = 1; k <= R.legend.length; k++) if (counts[k] > 0) rows.push([k, counts[k]]);
     rows.sort((a, b) => b[1] - a[1]);
+    const mark = (kind) => kind === 'agent' ? '\u2b50 ' : kind === 'nation' ? '\ud83c\udff0 ' : '\u00b7 ';  // \u2b50 agent / \ud83c\udff0 nation / \u00b7 tribe
     document.getElementById("board").innerHTML = rows.slice(0, 12).map(([k, n]) =>
-      '<div class="bar"><span class="chip" style="background:' + R.legend[k-1].color + '"></span>' +
-      '<span class="name">' + (allies.has(k) ? '\ud83e\udd1d ' : '') + R.legend[k-1].name + '</span>' +
+      '<div class="bar" style="opacity:' + (R.legend[k-1].kind === 'tribe' ? '0.6' : '1') + '"><span class="chip" style="background:' + R.legend[k-1].color + '"></span>' +
+      '<span class="name">' + mark(R.legend[k-1].kind) + (allies.has(k) ? '\ud83e\udd1d ' : '') + R.legend[k-1].name + '</span>' +
       '<span class="pct" style="color:#ffd24d;min-width:46px">' + fmtGold(gf[k-1]) + 'g</span>' +
       '<span class="pct">' + (100 * n / landTotal).toFixed(1) + '%</span></div>').join("") || '<div class="muted">no territory yet</div>';
     // permanent AGENT readout (it's usually too small to appear in the top-12 board)

@@ -96,21 +96,24 @@ else console.log("no trained weights; random policy");
 
 const DS = Math.max(1, Math.ceil(Math.max(W, H) / 240));
 const RW = Math.ceil(W / DS), RH = Math.ceil(H / DS);
-const PAL = ["#e6194B","#3cb44b","#ffe119","#4363d8","#f58231","#911eb4","#42d4f4","#f032e6","#bfef45","#fabed4","#469990","#dcbeff","#9A6324","#800000","#808000","#000075"];
+const PAL = ["#e6194B","#3cb44b","#ffe119","#4363d8","#f58231","#911eb4","#42d4f4","#f032e6","#bfef45","#fabed4","#469990","#dcbeff","#9A6324","#800000","#808000","#000075"];  // vivid = NATIONS
+const TRIBE_PAL = ["#5a5f66","#665f54","#54615a","#5f5461","#586066","#615a4c","#4f5560","#605050"];  // muted = TRIBES
 const TC: any = { [UnitType.City]:1, [UnitType.Port]:2, [UnitType.Factory]:3, [UnitType.MissileSilo]:4, [UnitType.DefensePost]:5, [UnitType.SAMLauncher]:6 };
 const terrain = new Uint8Array(RW * RH);
 for (let ry = 0; ry < RH; ry++) for (let rx = 0; rx < RW; rx++) { const t = game.ref(Math.min(W-1,rx*DS), Math.min(H-1,ry*DS)); terrain[ry*RW+rx] = game.isLand(t) && !game.isImpassable(t) ? 1 : 0; }
 const idToIdx = new Map<number, number>();
-const legend: { name: string; color: string }[] = [];
+const legend: { name: string; color: string; kind?: string }[] = [];
 const deltas: string[] = []; const frameTicks: number[] = []; const buildingFrames: number[][] = []; const goldFrames: number[][] = []; const allyFrames: number[][] = [];
 let prev = new Uint8Array(RW * RH);
 function ownerAt(x: number, y: number): number { const t = game.ref(x, y); if (!game.hasOwner(t)) return 0; const sid = game.ownerID(t);
   let k = idToIdx.get(sid); if (k === undefined) { k = legend.length + 1; idToIdx.set(sid, k); const p: any = game.playerBySmallID(sid);
-    legend.push({ name: p?.name?.() ?? `#${sid}`, color: p?.id?.() === AGENT_ID ? "#ffffff" : PAL[(k-1)%PAL.length] }); } return k; }
+    const isAgent = p?.id?.() === AGENT_ID; const kind = isAgent ? "agent" : (p?.type?.() === PlayerType.Nation ? "nation" : "tribe");
+    const color = isAgent ? "#ffffff" : (kind === "nation" ? PAL[(k-1)%PAL.length] : TRIBE_PAL[(k-1)%TRIBE_PAL.length]);
+    legend.push({ name: p?.name?.() ?? `#${sid}`, color, kind }); } return k; }
 function snapshot() {
   const cur = new Uint8Array(RW * RH);
   for (let ry = 0; ry < RH; ry++) for (let rx = 0; rx < RW; rx++) cur[ry*RW+rx] = ownerAt(Math.min(W-1,rx*DS), Math.min(H-1,ry*DS));
-  if (me.isAlive()) { let ak = idToIdx.get(me.smallID()); if (ak === undefined) { ak = legend.length+1; idToIdx.set(me.smallID(), ak); legend.push({ name: "AGENT", color: "#ffffff" }); }
+  if (me.isAlive()) { let ak = idToIdx.get(me.smallID()); if (ak === undefined) { ak = legend.length+1; idToIdx.set(me.smallID(), ak); legend.push({ name: "AGENT", color: "#ffffff", kind: "agent" }); }
     for (const t of me.tiles()) cur[Math.min(RH-1,Math.floor(game.y(t)/DS))*RW + Math.min(RW-1,Math.floor(game.x(t)/DS))] = ak; }
   const ch: number[] = []; for (let i = 0; i < cur.length; i++) if (cur[i] !== prev[i]) ch.push(i, cur[i]);
   const nn = ch.length/2; const buf = new Uint8Array(nn*5); const dv = new DataView(buf.buffer);
