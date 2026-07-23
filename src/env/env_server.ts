@@ -27,10 +27,15 @@ const MAP = process.env.MAP ?? "box";
 const MAPS: any = {
   world:     { rel: "tests/testdata/maps/world",      game: "map4x",  mini: "map16x", realNations: true },
   bigplains: { rel: "tests/testdata/maps/big_plains", game: "map",    mini: "map4x",  realNations: false },
-  box:       { rel: "resources/maps/thebox",          game: "map16x", mini: "map16x", realNations: true },
+  box:       { rel: "resources/maps/thebox",          game: "map16x", mini: "map16x", realNations: true },  // fast proxy (512x512)
+  box4x:     { rel: "resources/maps/thebox",          game: "map4x",  mini: "map16x", realNations: true },  // mid (1024x1024)
+  box_full:  { rel: "resources/maps/thebox",          game: "map",    mini: "map4x",  realNations: true },  // FULL SIZE (2048x2048) — eval target (mini must be 2x = map4x)
 };
 const mc = MAPS[MAP];
-const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [20, 160] };  // ~180 players = real density that FITS map16x (460 over-packed it)
+// [nations, tribes]. box tuned to real density that fits; full-size gets a near-real crowd (400 tribe cap).
+const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [20, 160], box4x: [40, 300], box_full: [60, 400] };
+// Opponent skill: DIFFICULTY=easy|medium|hard|impossible (goal is Impossible).
+const DIFF = (({ easy: Difficulty.Easy, medium: Difficulty.Medium, hard: Difficulty.Hard, impossible: Difficulty.Impossible } as any)[(process.env.DIFFICULTY ?? "medium").toLowerCase()]) ?? Difficulty.Medium;
 const NUM_NATIONS = +(process.env.NUM_NATIONS ?? DEF[MAP][0]), BOTS = +(process.env.BOTS ?? DEF[MAP][1]), MAX_TICKS = 12000;
 const DECIDE_EVERY = +(process.env.DECIDE_EVERY ?? 10);   // ticks between decisions — lower = more actions/game (throughput)
 const GW = 32, GC = 6;   // spatial observation: GWxGW pooled grid, GC channels (mine/enemy/neutral/impassable/myStruct/enemyStruct)
@@ -236,7 +241,7 @@ async function reset(seed: number): Promise<number[]> {
   const gameMap = await genTerrainFromBin(man[mc.game], mapBuf);
   const mini = await genTerrainFromBin(man[mc.mini], miniBuf);
   const cfg: any = { gameMap: GameMapType.World, gameMapSize: GameMapSize.Normal, gameMode: GameMode.FFA,
-    gameType: GameType.Singleplayer, difficulty: Difficulty.Medium, nations: "default",
+    gameType: GameType.Singleplayer, difficulty: DIFF, nations: "default",
     donateGold:false, donateTroops:false, bots: BOTS, infiniteGold:false, infiniteTroops:false, instantBuild:false, randomSpawn:false };
   const config = new Config(cfg, null as any, false);
   let s = seed >>> 0; const rand = () => (s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 0xffffffff;
