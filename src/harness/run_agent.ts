@@ -18,7 +18,10 @@ import { Policy, ACTIONS, setFlat } from "../agent/policy";
 import { computeReward } from "../agent/reward";
 
 const _warn = console.warn.bind(console);
-console.warn = (...a: any[]) => { if (typeof a[0] === "string" && a[0].startsWith("cannot build")) return; _warn(...a); };
+const _log = console.log.bind(console);
+const mute = (s: any) => typeof s === "string" && (s.startsWith("cannot build") || s.includes("cannot spawn"));
+console.warn = (...a: any[]) => { if (mute(a[0])) return; _warn(...a); };
+console.log = (...a: any[]) => { if (mute(a[0])) return; _log(...a); };
 
 const SEED = +(process.env.SEED ?? 777);          // e.g. SEED=90001 to watch held-out validation world #1
 const gameID = "env_" + SEED;                     // mirror env_server's reset exactly (tribe placement + spawn)
@@ -31,7 +34,7 @@ const MAPS: any = {
   box:       { rel: "resources/maps/thebox",          game: "map16x", mini: "map16x", realNations: true },
 };
 const mc = MAPS[MAP];
-const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [60, 400] };  // realistic crowd (mirror env_server)
+const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [20, 160] };  // real density that fits map16x (mirror env_server)
 const NUM_NATIONS = +(process.env.NUM_NATIONS ?? DEF[MAP][0]), BOTS = +(process.env.BOTS ?? DEF[MAP][1]);
 const FRAME_EVERY = 30, DECISION_EVERY = 20, MAX_TICKS = 12000, MAX_GAME_MS = 60000;
 const dir = path.dirname(fileURLToPath(import.meta.url));
@@ -83,6 +86,7 @@ for (let k = 0; k < 15 && !me.isAlive(); k++) game.executeNextTick();  // ensure
 const OPPONENTS = NUM_NATIONS + BOTS;
 
 const policy = new Policy(16, 24, 13);
+let smpS = 12345; const smpl = () => (smpS = (Math.imul(smpS, 1103515245) + 12345) >>> 0) / 0xffffffff;  // seeded action sampler
 // Prefer the torch-trained weights (exported by train_torch/export_weights.py), else the ES weights.
 const torchPath = path.join(dir, "../../data/torch_weights.json");
 const esPath = path.join(dir, "../../data/best_weights.json");
@@ -151,9 +155,10 @@ for (; tick < MAX_TICKS; tick++) {
       strongest?Math.min(1,me.troops()/Math.max(1,strongest.troops())/2):1,
       Math.min(1, sumTroops/troopsN/3), Math.min(1, allyTroops/troopsN),
       offererTroops>0?Math.min(1, offererTroops/troopsN/2):0];
-    // Greedy (argmax) for a deterministic, representative "best play" replay — the JS sampler
-    // doesn't match torch's, so sampling here would show an unrepresentative one-off rollout.
-    const { action, troopFraction } = policy.forward(obs);
+    // Sample from the action distribution (as during training) — greedy argmax can loop on one
+    // passive action and die at spawn, which misrepresents the policy; sampling shows real behavior.
+    const { probs, troopFraction } = policy.forward(obs);
+    let rr = smpl(), action = 0; for (let i = 0; i < probs.length; i++) { rr -= probs[i]; if (rr <= 0) { action = i; break; } }
     const commit = Math.floor(me.troops() * Math.max(0.01, Math.min(1, troopFraction)));
     // Build on a currently-owned tile (the fixed spawn tile is often captured by mid-game).
     const ownedTile = () => { if (game.ownerID(spawnTile) === me.smallID()) return spawnTile; for (const t of me.tiles()) return t; return spawnTile; };

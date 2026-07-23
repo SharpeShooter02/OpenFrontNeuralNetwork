@@ -30,7 +30,7 @@ const MAPS: any = {
   box:       { rel: "resources/maps/thebox",          game: "map16x", mini: "map16x", realNations: true },
 };
 const mc = MAPS[MAP];
-const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [60, 400] };  // realistic crowd: ~460 players, no cheap outlast-wins
+const DEF: any = { world: [15, 100], bigplains: [6, 24], box: [20, 160] };  // ~180 players = real density that FITS map16x (460 over-packed it)
 const NUM_NATIONS = +(process.env.NUM_NATIONS ?? DEF[MAP][0]), BOTS = +(process.env.BOTS ?? DEF[MAP][1]), MAX_TICKS = 12000, DECIDE_EVERY = 20;
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const md = path.join(dir, "../../vendor/OpenFrontIO/" + mc.rel);
